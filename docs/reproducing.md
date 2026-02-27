@@ -25,6 +25,17 @@ Each application provides a script in `env.py` that launches the job. Run it wit
 python -m examples.<task_dir>.env
 ```
 
+
+## Getting Final Performance
+
+We use the `raw_score` metric for logging our task performance. The final performance is typically the max (or min) of the `raw_score` metric, logged as `env/all/raw_score/max` (or `env/all/raw_score/min` for applications that minimize a value), **across all steps**. For example, in a training run for 50 steps of circle packing, if the max raw score at step 12 is 2.63 and no earlier or later step exceeds it, the final performance is still 2.63.
+
+Some applications may require extra processing for our final results, such as denoising.
+
+The following examples are maximization tasks: `second ac inequalities`, `circle packing`, and `AHC`. For performance, you should track the `env/all/raw_score/max`.
+
+The following examples are minimization tasks: `first ac inequalities`, `erdos minimum overlap`, `denoising`, and `gpu mode`. For performance, you should track the `env/all/raw_score/min`.
+
 ## Multi-node Execution
 
 Multi-node execution is supported via Slurm.
