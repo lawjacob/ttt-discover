@@ -141,15 +141,32 @@ Make sure to /think step by step, first give your strategy between <strategy> an
 """
 
 
-def discover_circle_packing(num_circles: str):
+def discover_circle_packing(
+    num_circles: str,
+    *,
+    backend_type: str = "tinker_train",
+    model_name: str = "openai/gpt-oss-120b",
+    local_model_path: str | None = None,
+    sampler_type: str = "hta",
+    num_steps: int = 50,
+    group_size: int = 8,
+    groups_per_batch: int = 64,
+):
     # Uses default values for most fields
     config = DiscoverConfig(
         env_type=CirclePackingEnv,
         problem_type=num_circles,
         num_cpus_per_task=1,
         eval_timeout=530,
-        experiment_name=f"test-circle-packing-{num_circles}-run",
+        experiment_name=f"test-circle-packing-{num_circles}-{sampler_type}-{backend_type}",
         wandb_project="circle-packing",
+        backend_type=backend_type,
+        model_name=model_name,
+        local_model_path=local_model_path,
+        sampler_type=sampler_type,
+        num_epochs=num_steps,
+        group_size=group_size,
+        groups_per_batch=groups_per_batch,
     )
 
     # Run discovery
@@ -157,5 +174,13 @@ def discover_circle_packing(num_circles: str):
 
 
 if __name__ == "__main__":
-    num_circles = "26" # or "32"
-    discover_circle_packing(num_circles)
+    num_circles = "26"  # or "32"
+    discover_circle_packing(
+        num_circles,
+        backend_type="local_inference",
+        model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+        sampler_type="hta",
+        num_steps=10,
+        group_size=2,
+        groups_per_batch=4,
+    )

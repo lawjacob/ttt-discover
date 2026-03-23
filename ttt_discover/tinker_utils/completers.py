@@ -6,6 +6,7 @@ The TokenCompleter operates on tokens. This is the version used by RL algorithms
 Evals and other code should use the appropriate interface.
 """
 
+import asyncio
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -42,6 +43,92 @@ class TokenCompleter:
         self, model_input: tinker.ModelInput, stop: StopCondition
     ) -> TokensWithLogprobs:
         raise NotImplementedError
+
+
+def _flatten_text_tokens(model_input: tinker.ModelInput) -> list[int]:
+    tokens: list[int] = []
+    for chunk in model_input.chunks:
+        if not isinstance(chunk, tinker.types.EncodedTextChunk):
+            raise ValueError("Local inference backend only supports text-only prompts")
+        tokens.extend(chunk.tokens)
+    return tokens
+
+
+class _StopOnTokenSequence:
+    def __init__(self, stop_sequences: list[list[int]]):
+        self.stop_sequences = [seq for seq in stop_sequences if seq]
+
+    def __call__(self, input_ids, scores, **kwargs) -> bool:
+        if not self.stop_sequences:
+            return False
+        sequence = input_ids[0].tolist()
+        return any(
+            len(stop) <= len(sequence) and sequence[-len(stop):] == stop
+            for stop in self.stop_sequences
+        )
+
+
+@dataclass
+class LocalHFTokenCompleter(TokenCompleter):
+    model_name_or_path: str
+    tokenizer: Tokenizer
+    max_new_tokens: int = 2048
+    temperature: float = 1.0
+    device_map: str = "auto"
+
+    def __post_init__(self) -> None:
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        self._torch = torch
+        self._model = AutoModelForCausalLM.from_pretrained(
+            self.model_name_or_path,
+            torch_dtype="auto",
+            device_map=self.device_map,
+            local_files_only=False,
+        )
+        if self._model.generation_config.pad_token_id is None:
+            pad_token_id = self.tokenizer.pad_token_id
+            if pad_token_id is None:
+                pad_token_id = self.tokenizer.eos_token_id
+            self._model.generation_config.pad_token_id = pad_token_id
+
+    def _encode_stop_sequences(self, stop: StopCondition) -> list[list[int]]:
+        encoded: list[list[int]] = []
+        for item in stop:
+            if isinstance(item, int):
+                encoded.append([item])
+            else:
+                tokens = self.tokenizer.encode(item, add_special_tokens=False)
+                if tokens:
+                    encoded.append(tokens)
+        return encoded
+
+    async def __call__(self, model_input: tinker.ModelInput, stop: StopCondition) -> TokensWithLogprobs:
+        from transformers import StoppingCriteriaList
+
+        prompt_tokens = _flatten_text_tokens(model_input)
+        prompt = self._torch.tensor([prompt_tokens], device=self._model.device)
+        attention_mask = self._torch.ones_like(prompt)
+        stop_sequences = self._encode_stop_sequences(stop)
+        stopping_criteria = StoppingCriteriaList([_StopOnTokenSequence(stop_sequences)])
+
+        generation_kwargs = {
+            "input_ids": prompt,
+            "attention_mask": attention_mask,
+            "max_new_tokens": self.max_new_tokens,
+            "pad_token_id": self._model.generation_config.pad_token_id,
+            "stopping_criteria": stopping_criteria,
+        }
+        if self.temperature > 0:
+            generation_kwargs["do_sample"] = True
+            generation_kwargs["temperature"] = self.temperature
+        else:
+            generation_kwargs["do_sample"] = False
+
+        generated = await asyncio.to_thread(self._model.generate, **generation_kwargs)
+        tokens = generated[0][len(prompt_tokens):].tolist()
+        return TokensWithLogprobs(tokens=tokens, maybe_logprobs=[0.0] * len(tokens))
 
 
 @dataclass
@@ -165,4 +252,3 @@ class TwoPhaseTokenCompleter(TokenCompleter):
             maybe_logprobs=phase1_logprobs + [0.0] * len(prefill_tokens) + phase2_logprobs,
             maybe_mask=[1.0] * len(phase1_tokens) + [0.0] * len(prefill_tokens) + [1.0] * len(phase2_tokens),
         )
-

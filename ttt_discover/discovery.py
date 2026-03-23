@@ -15,12 +15,16 @@ logger = logging.getLogger(__name__)
 
 @chz.chz
 class DiscoverConfig:
-    """Simple config for discovery with RL training."""
+    """Simple config for discovery with RL training or local inference-only search."""
 
     # Model config
     model_name: str = "openai/gpt-oss-120b"
     lora_rank: int = 32
     renderer_name: str | None = "gpt_oss_high_reasoning"
+    backend_type: Literal["tinker_train", "local_inference"] = "tinker_train"
+    local_model_path: str | None = None
+    local_max_new_tokens: int = 2048
+    local_device_map: str = "auto"
     save_every: int = 2
 
     # Training hyperparameters
@@ -101,7 +105,7 @@ async def discover_impl(config: DiscoverConfig):
         problem_type=config.problem_type,
         batch_size=config.groups_per_batch,
         group_size=config.group_size,
-        model_name_for_tokenizer=config.model_name,
+        model_name_for_tokenizer=config.local_model_path or config.model_name,
         renderer_name=renderer_name,
         num_cpus_per_task=config.num_cpus_per_task,
         eval_timeout=config.eval_timeout,
@@ -136,7 +140,10 @@ async def discover_impl(config: DiscoverConfig):
         adv_estimator_beta=2.0, # Unused with entropic_adaptive_beta
         remove_constant_reward_groups=True,
         phase1_max_tokens=config.phase1_max_tokens,
-        local_model_path=None,
+        local_model_path=config.local_model_path,
+        backend_type=config.backend_type,
+        local_max_new_tokens=config.local_max_new_tokens,
+        local_device_map=config.local_device_map,
     )
 
     misc_utils.check_log_dir(log_path, behavior_if_exists="resume")

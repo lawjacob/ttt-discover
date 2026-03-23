@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Dict, List, Sequence, cast
+from typing import Any, Dict, List, Literal, Sequence, cast
 
 import chz
 import numpy as np
@@ -16,7 +16,7 @@ import tinker
 import torch
 from tinker.types import LossFnType
 from ttt_discover.tinker_utils.misc_utils import get_last_checkpoint, save_checkpoint_async
-from ttt_discover.tinker_utils.completers import TwoPhaseTokenCompleter
+from ttt_discover.tinker_utils.completers import LocalHFTokenCompleter, TwoPhaseTokenCompleter
 from ttt_discover.rl.data_processing import (
     assemble_training_data,
     remove_constant_reward_groups,
@@ -304,6 +304,9 @@ class Config:
     
     # Local model path (avoids HuggingFace API rate limits)
     local_model_path: str | None = None
+    backend_type: Literal["tinker_train", "local_inference"] = "tinker_train"
+    local_max_new_tokens: int = 2048
+    local_device_map: str = "auto"
 
 
 @chz.chz
@@ -623,6 +626,43 @@ async def main(
     else:
         start_batch = 0
 
+    if cfg.backend_type == "local_inference":
+        from ttt_discover.tinker_utils.misc_utils import get_tokenizer
+
+        tokenizer = get_tokenizer(cfg.local_model_path or cfg.model_name)
+        dataset = await cfg.dataset_builder()
+        if resume_info and start_batch > 0 and hasattr(dataset, "sampler") and hasattr(dataset.sampler, "reload_from_step"):
+            logger.info(f"Reloading sampler state from step {start_batch}")
+            dataset.sampler.reload_from_step(start_batch)
+        num_batches_per_epoch = len(dataset)
+        if num_batches_per_epoch == 0:
+            raise ValueError("RLDataset must contain at least one batch")
+        num_batches_total = num_batches_per_epoch * cfg.num_epochs
+        logger.info(
+            "Running local inference-only search for %s step(s) with %s",
+            num_batches_total,
+            cfg.local_model_path or cfg.model_name,
+        )
+        policy = LocalHFTokenCompleter(
+            model_name_or_path=cfg.local_model_path or cfg.model_name,
+            tokenizer=tokenizer,
+            max_new_tokens=cfg.local_max_new_tokens,
+            temperature=cfg.temperature,
+            device_map=cfg.local_device_map,
+        )
+        await do_local_inference_search(
+            start_batch=start_batch,
+            end_batch=num_batches_total,
+            num_batches=num_batches_total,
+            cfg=cfg,
+            dataset=dataset,
+            ml_logger=ml_logger,
+            policy=policy,
+        )
+        ml_logger.close()
+        logger.info("Local inference search completed successfully")
+        return
+
     print("Create training client...")
     service_client = tinker.ServiceClient(base_url=None)
     print("Training client created!")
@@ -699,3 +739,58 @@ async def main(
     # Cleanup
     ml_logger.close()
     logger.info("Training completed successfully")
+
+
+@scope
+async def do_local_inference_search(
+    start_batch: int,
+    end_batch: int,
+    num_batches: int,
+    cfg: Config,
+    dataset: RLDataset,
+    ml_logger: ml_log.Logger,
+    policy: LocalHFTokenCompleter,
+):
+    num_batches_per_epoch = len(dataset)
+    if num_batches_per_epoch == 0:
+        raise ValueError("RLDataset must contain at least one batch")
+
+    for i_batch in range(start_batch, end_batch):
+        metrics = {
+            "progress/batch": i_batch,
+            "progress/done_frac": (i_batch + 1) / num_batches,
+        }
+        t_start = time.time()
+
+        from ttt_discover.tinker_utils.best_sequence_utils import get_best_bound_path, clear_step_entry
+
+        best_seq_path = get_best_bound_path(cfg.log_path)
+        clear_step_entry(best_seq_path, i_batch)
+
+        dataset_batch_idx = i_batch % num_batches_per_epoch
+        env_group_builders_P = dataset.get_batch(dataset_batch_idx)
+
+        if hasattr(dataset, "sampler") and hasattr(dataset.sampler, "get_sample_stats"):
+            metrics.update(dataset.sampler.get_sample_stats())
+
+        with timed("sampling", metrics):
+            trajectory_groups_P = await asyncio.gather(
+                *[
+                    asyncio.create_task(
+                        do_group_rollout(builder, policy, i_batch),
+                        name=f"local_sample_task_{i}",
+                    )
+                    for i, builder in enumerate(env_group_builders_P)
+                ]
+            )
+
+        if hasattr(dataset, "flush"):
+            dataset.flush(step=i_batch + 1)
+
+        taglist_P = [env_group_builder.logging_tags() for env_group_builder in env_group_builders_P]
+        rollout_metrics = compute_trajectory_metrics(trajectory_groups_P, taglist_P)
+        if "table" in rollout_metrics:
+            rollout_metrics.pop("table")
+        metrics.update(rollout_metrics)
+        metrics["time/total"] = time.time() - t_start
+        ml_logger.log_metrics(metrics, step=i_batch)
