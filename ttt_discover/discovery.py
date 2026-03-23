@@ -41,6 +41,12 @@ class DiscoverConfig:
     problem_type: str = "26"
     num_cpus_per_task: int = 0
     eval_timeout: int = 1000
+    sampler_type: Literal["puct", "hta"] = "hta"
+    hta_num_niches: int = 32
+    hta_alpha_step: float = 0.05
+    hta_stagnation_window: int = 15
+    hta_inter_fraction_floor: float = 0.2
+    hta_inter_fraction_ceiling: float = 0.8
 
 
 def init_ray(num_cpus_per_task: int, env_type: str):
@@ -97,6 +103,12 @@ async def discover_impl(config: DiscoverConfig):
         num_cpus_per_task=config.num_cpus_per_task,
         eval_timeout=config.eval_timeout,
         log_path=log_path,
+        sampler_type=config.sampler_type,
+        hta_num_niches=config.hta_num_niches,
+        hta_alpha_step=config.hta_alpha_step,
+        hta_stagnation_window=config.hta_stagnation_window,
+        hta_inter_fraction_floor=config.hta_inter_fraction_floor,
+        hta_inter_fraction_ceiling=config.hta_inter_fraction_ceiling,
     )
     dataset_builder = get_single_problem_dataset_builder(dataset_config)
 

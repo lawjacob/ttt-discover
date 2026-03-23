@@ -3,11 +3,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import os
 import threading
+from typing import Literal
 
 import numpy as np
 
 from ttt_discover.tinker_utils.state import State, state_from_dict
 from ttt_discover.tinker_utils.best_sequence_utils import _file_lock, _atomic_write_json, _read_json_or_default
+
+# HTA sampler is imported lazily inside factory functions to avoid import cycles.
 
 
 class StateSampler(ABC):
@@ -439,18 +442,41 @@ def create_sampler(
     problem_type: str = "",
     batch_size: int = 1,
     resume_step: int | None = None,
+    sampler_type: Literal["puct", "hta"] = "puct",
+    sampler_kwargs: dict | None = None,
 ) -> StateSampler:
-    """Factory function to create samplers. Pass the env type (from config.env_type)."""
+    """Factory function to create samplers.
+
+    Args:
+        sampler_type: "puct" (default) or "hta".
+        sampler_kwargs: extra parameters forwarded to the chosen sampler.
+    """
     if not log_path:
-        raise ValueError("log_path is required when using PUCT sampler")
-    sampler_path = os.path.join(log_path, "puct_sampler.json")
-    return PUCTSampler(
-        file_path=sampler_path,
-        env_type=env_type,
-        problem_type=problem_type,
-        batch_size=batch_size,
-        resume_step=resume_step,
-    )
+        raise ValueError("log_path is required when using samplers")
+    sampler_kwargs = sampler_kwargs or {}
+
+    if sampler_type == "puct":
+        sampler_path = os.path.join(log_path, "puct_sampler.json")
+        return PUCTSampler(
+            file_path=sampler_path,
+            env_type=env_type,
+            problem_type=problem_type,
+            batch_size=batch_size,
+            resume_step=resume_step,
+        )
+    if sampler_type == "hta":
+        from ttt_discover.tinker_utils.hta_sampler import HTASampler
+
+        sampler_path = os.path.join(log_path, "hta_sampler.json")
+        return HTASampler(
+            file_path=sampler_path,
+            env_type=env_type,
+            problem_type=problem_type,
+            batch_size=batch_size,
+            resume_step=resume_step,
+            **sampler_kwargs,
+        )
+    raise ValueError(f"Unknown sampler_type: {sampler_type}")
 
 
 def get_or_create_sampler_with_default(
@@ -459,6 +485,8 @@ def get_or_create_sampler_with_default(
     problem_type: str = "",
     batch_size: int = 1,
     resume_step: int | None = None,
+    sampler_type: Literal["puct", "hta"] = "puct",
+    sampler_kwargs: dict | None = None,
 ) -> StateSampler:
     """Get sampler. Initial experience is created via env_type.create_initial_state."""
     return create_sampler(
@@ -467,4 +495,6 @@ def get_or_create_sampler_with_default(
         problem_type=problem_type,
         batch_size=batch_size,
         resume_step=resume_step,
+        sampler_type=sampler_type,
+        sampler_kwargs=sampler_kwargs,
     )

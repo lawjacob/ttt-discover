@@ -41,6 +41,12 @@ class DatasetConfig:
     timeout: float = 8000.0 # Timeout for async grading, not sandbox timeout
     convo_prefix: Any = None
     gpu_mode_score_scale: float = 3000.0
+    sampler_type: str = "hta"  # "puct" or "hta"
+    hta_num_niches: int = 32
+    hta_alpha_step: float = 0.05
+    hta_stagnation_window: int = 15
+    hta_inter_fraction_floor: float = 0.2
+    hta_inter_fraction_ceiling: float = 0.8
 
 
 class SingleProblemDataset(RLDataset):
@@ -114,11 +120,20 @@ class SingleProblemDatasetBuilder(RLDatasetBuilder):
 
     def _get_sampler(self) -> StateSampler:
         """Get the appropriate sampler; env_type is already set on config."""
+        sampler_kwargs = {
+            "num_niches": self.config.hta_num_niches,
+            "alpha_step": self.config.hta_alpha_step,
+            "stagnation_window": self.config.hta_stagnation_window,
+            "inter_fraction_floor": self.config.hta_inter_fraction_floor,
+            "inter_fraction_ceiling": self.config.hta_inter_fraction_ceiling,
+        }
         return get_or_create_sampler_with_default(
             log_path=self.config.log_path,
             env_type=self.config.env_type,
             batch_size=self.config.batch_size,
             problem_type=self.config.problem_type,
+            sampler_type=self.config.sampler_type,
+            sampler_kwargs=sampler_kwargs,
         )
 
 
