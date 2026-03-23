@@ -154,22 +154,27 @@ def discover_circle_packing(
     backend_type: str = "tinker_train",
     model_name: str = "openai/gpt-oss-120b",
     local_model_path: str | None = None,
+    renderer_name: str | None = None,
     sampler_type: str = "hta",
     num_steps: int = 50,
     group_size: int = 8,
     groups_per_batch: int = 64,
+    num_cpus_per_task: int | None = None,
 ):
     # Uses default values for most fields
+    if num_cpus_per_task is None:
+        num_cpus_per_task = 0 if backend_type == "local_inference" else 1
     config = DiscoverConfig(
         env_type=CirclePackingEnv,
         problem_type=num_circles,
-        num_cpus_per_task=1,
+        num_cpus_per_task=num_cpus_per_task,
         eval_timeout=530,
         experiment_name=f"test-circle-packing-{num_circles}-{sampler_type}-{backend_type}",
         wandb_project="circle-packing",
         backend_type=backend_type,
         model_name=model_name,
         local_model_path=local_model_path,
+        renderer_name=renderer_name,
         sampler_type=sampler_type,
         num_epochs=num_steps,
         group_size=group_size,
@@ -186,6 +191,7 @@ if __name__ == "__main__":
         num_circles,
         backend_type="local_inference",
         model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+        renderer_name="qwen3_instruct",
         sampler_type="hta",
         num_steps=10,
         group_size=2,

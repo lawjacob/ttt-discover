@@ -74,9 +74,11 @@ def main() -> None:
     parser.add_argument("--backend-type", default="local_inference", choices=["local_inference", "tinker_train"])
     parser.add_argument("--model-name", default="Qwen/Qwen2.5-Coder-1.5B-Instruct")
     parser.add_argument("--local-model-path", default=None)
+    parser.add_argument("--renderer-name", default=None)
     parser.add_argument("--num-steps", type=int, default=10)
     parser.add_argument("--group-size", type=int, default=2)
     parser.add_argument("--groups-per-batch", type=int, default=4)
+    parser.add_argument("--num-cpus-per-task", type=int, default=None)
     parser.add_argument("--base-log-dir", default="tinker_log")
     args = parser.parse_args()
 
@@ -85,9 +87,11 @@ def main() -> None:
         backend_type=args.backend_type,
         model_name=args.model_name,
         local_model_path=args.local_model_path,
+        renderer_name=args.renderer_name,
         num_steps=args.num_steps,
         group_size=args.group_size,
         groups_per_batch=args.groups_per_batch,
+        num_cpus_per_task=args.num_cpus_per_task,
     )
 
     for sampler_type in ("puct", "hta"):

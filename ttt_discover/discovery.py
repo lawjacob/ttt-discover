@@ -13,6 +13,15 @@ from ttt_discover.tinker_utils.dataset_builder import DatasetConfig, get_single_
 logger = logging.getLogger(__name__)
 
 
+def _infer_renderer_name(model_name: str) -> str:
+    lower = model_name.lower()
+    if "qwen" in lower:
+        return "qwen3_instruct"
+    if "gpt-oss" in lower:
+        return "gpt_oss_high_reasoning"
+    return "qwen3_instruct"
+
+
 @chz.chz
 class DiscoverConfig:
     """Simple config for discovery with RL training or local inference-only search."""
@@ -93,7 +102,19 @@ async def discover_impl(config: DiscoverConfig):
     logging.getLogger().handlers.clear()
     logging.getLogger().addHandler(logging.NullHandler())
 
+    effective_model_name = config.local_model_path or config.model_name
     renderer_name = config.renderer_name
+    inferred_renderer = _infer_renderer_name(effective_model_name)
+    if renderer_name is None:
+        renderer_name = inferred_renderer
+    elif inferred_renderer != renderer_name and "qwen" in effective_model_name.lower() and renderer_name.startswith("gpt_oss"):
+        logger.warning(
+            "Renderer '%s' does not match model '%s'; switching to '%s'.",
+            renderer_name,
+            effective_model_name,
+            inferred_renderer,
+        )
+        renderer_name = inferred_renderer
 
     # create log path if it doesn't exist
     log_path = f"./tinker_log/{config.experiment_name}"
