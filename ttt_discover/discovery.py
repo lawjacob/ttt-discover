@@ -77,7 +77,10 @@ def init_ray(num_cpus_per_task: int, env_type: str):
 async def discover_impl(config: DiscoverConfig):
     """Convert discover config to full config and run training."""
 
-    assert config.model_name in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}, "Only supporting GPT-OSS models for now."
+    # Previously restricted to GPT-OSS models; allow arbitrary HF/local models for Colab/testing.
+    # Keep a soft warning to remind users that untested models may require compatible renderers.
+    if config.model_name not in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}:
+        logger.warning("Using non-GPT-OSS model '%s'; ensure the renderer matches the model formatting.", config.model_name)
 
     # Ray is needed to dispatch jobs across cpus
     if config.num_cpus_per_task > 0:
