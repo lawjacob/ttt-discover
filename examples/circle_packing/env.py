@@ -163,7 +163,7 @@ def discover_circle_packing(
 ):
     # Uses default values for most fields
     if num_cpus_per_task is None:
-        num_cpus_per_task = 0 if backend_type == "local_inference" else 1
+        num_cpus_per_task = 1
     config = DiscoverConfig(
         env_type=CirclePackingEnv,
         problem_type=num_circles,
