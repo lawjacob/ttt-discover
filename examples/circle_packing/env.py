@@ -76,6 +76,10 @@ class CirclePackingReward(SandboxRewardEvaluator):
     def get_program_entrypoint(self) -> str:
         return "run_packing"
 
+    def preprocess_generation(self, generation: str, state: State) -> str:
+        helper_src = inspect.getsource(validate_packing)
+        return f"import numpy as np\n\n{helper_src}\n\n{generation}"
+
     # Just define get reward.
     def get_reward(self, code: str, state: State) -> float:
         output, error_msg = self.execute_code(code, state)
@@ -138,6 +142,7 @@ Rules:
 - You must define the run_packing function: def run_packing() -> tuple[np.ndarray, np.ndarray, float]
 - Returns (centers, radii, sum_radii) where centers has shape ({self.problem_type}, 2) and radii has shape ({self.problem_type},).
 - You can use scientific libraries like scipy, numpy, cvxpy, math.
+- The `validate_packing` function shown above is available to call at runtime if you want, but the evaluator will also validate your output separately.
 - Centers must lie within [0,1]^2 and radii must be nonnegative.
 - The pair (centers, radii) must satisfy non-overlap and boundary constraints.
 - Make all helper functions top level and have no closures from function nesting. Don't use any lambda functions.
