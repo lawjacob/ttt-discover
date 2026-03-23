@@ -235,3 +235,6 @@ gpu_mode/gpu_scores.tsv
 tinker_log/
 openproblems/
 data/
+
+.DS_Store
+hta.txt
