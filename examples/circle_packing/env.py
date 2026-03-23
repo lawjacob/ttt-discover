@@ -115,10 +115,12 @@ class CirclePackingEnv(Environment):
 
     def get_question(self) -> str:
         """Build prompt from template"""
-        assert self.problem_type in {"26", "32"}
+        # assert self.problem_type in {"26", "32"}
+        # For testing purpose, we do 6
         validator_src = inspect.getsource(validate_packing)
         # Assume we do 26
-        target = 2.636 if self.problem_type == "26" else 2.940
+        # target = 2.636 if self.problem_type == "26" else 2.940
+        target = 2.06 # we do 6 for testing purpose
         state_ctx = self.initial_state.to_prompt(target, metric_name="sum of radii")
 
         return f"""You are an expert mathematician specializing in circle packing problems and computational geometry.
