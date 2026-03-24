@@ -68,8 +68,7 @@ def init_ray(num_cpus_per_task: int, env_type: str):
     if not ray.is_initialized():
         ray.init()
     else:
-        if env_type.__name__ != "AhcEnv":
-            ray.init("auto")
+        print("Ray is already initialized; reusing existing cluster.")
 
     try:
         # Try to get existing actor by name
