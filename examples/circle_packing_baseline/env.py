@@ -1,4 +1,5 @@
 import inspect
+import itertools
 import sys
 from pathlib import Path
 
@@ -36,33 +37,94 @@ def validate_packing(centers, radii):
     return True
 
 
-BASELINE_CENTERS = [
-    [1.0 / 6.0, 1.0 / 6.0],
-    [3.0 / 6.0, 1.0 / 6.0],
-    [5.0 / 6.0, 1.0 / 6.0],
-    [1.0 / 6.0, 3.0 / 6.0],
-    [3.0 / 6.0, 3.0 / 6.0],
-    [5.0 / 6.0, 3.0 / 6.0],
-]
-BASELINE_RADII = [1.0 / 6.0] * 6
-BASELINE_SUM = float(sum(BASELINE_RADII))
-BASELINE_CODE = """```python
+def _baseline_code(centers: list[list[float]], radii: list[float]) -> str:
+    centers_rows = ",\n        ".join(str([float(x), float(y)]) for x, y in centers)
+    radii_row = ", ".join(str(float(r)) for r in radii)
+    return f"""```python
 import numpy as np
 
 def run_packing() -> tuple[np.ndarray, np.ndarray, float]:
     centers = np.array([
-        [1.0 / 6.0, 1.0 / 6.0],
-        [3.0 / 6.0, 1.0 / 6.0],
-        [5.0 / 6.0, 1.0 / 6.0],
-        [1.0 / 6.0, 3.0 / 6.0],
-        [3.0 / 6.0, 3.0 / 6.0],
-        [5.0 / 6.0, 3.0 / 6.0],
+        {centers_rows}
     ], dtype=float)
-    radii = np.full(6, 1.0 / 6.0, dtype=float)
+    radii = np.array([{radii_row}], dtype=float)
     sum_radii = float(np.sum(radii))
     return centers, radii, sum_radii
 ```"""
 
+BASELINE_LIBRARY: dict[str, dict] = {
+    "strong_grid": {
+        "name": "strong_grid",
+        "description": "A strong equal-radius 3x2 grid baseline.",
+        "centers": [
+            [1.0 / 6.0, 1.0 / 6.0],
+            [3.0 / 6.0, 1.0 / 6.0],
+            [5.0 / 6.0, 1.0 / 6.0],
+            [1.0 / 6.0, 3.0 / 6.0],
+            [3.0 / 6.0, 3.0 / 6.0],
+            [5.0 / 6.0, 3.0 / 6.0],
+        ],
+        "radii": [1.0 / 6.0] * 6,
+    },
+    "corners_edges": {
+        "name": "corners_edges",
+        "description": "A conservative baseline using corners and edge centers.",
+        "centers": [
+            [0.15, 0.15],
+            [0.50, 0.15],
+            [0.85, 0.15],
+            [0.15, 0.85],
+            [0.50, 0.85],
+            [0.85, 0.85],
+        ],
+        "radii": [0.10] * 6,
+    },
+    "staggered_rows": {
+        "name": "staggered_rows",
+        "description": "A weaker but valid staggered two-row baseline.",
+        "centers": [
+            [0.18, 0.22],
+            [0.50, 0.22],
+            [0.82, 0.22],
+            [0.30, 0.58],
+            [0.62, 0.58],
+            [0.86, 0.58],
+        ],
+        "radii": [0.09] * 6,
+    },
+    "weak_grid": {
+        "name": "weak_grid",
+        "description": "A deliberately weak but valid grid baseline.",
+        "centers": [
+            [0.18, 0.18],
+            [0.50, 0.18],
+            [0.82, 0.18],
+            [0.18, 0.50],
+            [0.50, 0.50],
+            [0.82, 0.50],
+        ],
+        "radii": [0.08] * 6,
+    },
+}
+
+
+for baseline in BASELINE_LIBRARY.values():
+    baseline["sum"] = float(sum(baseline["radii"]))
+    baseline["code"] = _baseline_code(baseline["centers"], baseline["radii"])
+
+
+def _make_baseline_state(baseline_name: str) -> State:
+    baseline = BASELINE_LIBRARY[baseline_name]
+    return State(
+        timestep=-1,
+        construction={"baseline": baseline_name, "centers": baseline["centers"], "radii": baseline["radii"]},
+        code=baseline["code"],
+        value=baseline["sum"],
+        observation=(
+            f"Valid baseline '{baseline_name}' loaded with sum of radii {baseline['sum']:.6f}. "
+            f"{baseline['description']}"
+        ),
+    )
 
 class CirclePackingBaselineReward(SandboxRewardEvaluator):
     def get_program_entrypoint(self) -> str:
@@ -103,22 +165,19 @@ class CirclePackingBaselineReward(SandboxRewardEvaluator):
 class CirclePackingBaselineEnv(Environment):
     reward_function = CirclePackingBaselineReward
     state_type = State
+    baseline_name = "strong_grid"
 
     @classmethod
     def create_initial_state(cls, problem_type: str) -> State:
         if problem_type != "6":
             raise ValueError("CirclePackingBaselineEnv only supports problem_type='6'")
-        return State(
-            timestep=-1,
-            construction={"centers": BASELINE_CENTERS, "radii": BASELINE_RADII},
-            code=BASELINE_CODE,
-            value=BASELINE_SUM,
-            observation=f"Valid baseline loaded with sum of radii {BASELINE_SUM:.6f}.",
-        )
+        return _make_baseline_state(cls.baseline_name)
 
     def get_question(self) -> str:
         validator_src = inspect.getsource(validate_packing)
-        state_ctx = self.initial_state.to_prompt(1.05, metric_name="sum of radii")
+        baseline_name = self.initial_state.construction.get("baseline", self.baseline_name)
+        baseline = BASELINE_LIBRARY[baseline_name]
+        state_ctx = self.initial_state.to_prompt(max(1.05, baseline["sum"] + 0.05), metric_name="sum of radii")
 
         return f"""You are editing a working Python baseline for packing 6 circles in the unit square.
 
@@ -143,12 +202,27 @@ Important:
   sum_radii: float
 - It is okay to keep the same packing if you are unsure, but the program must run.
 - Prefer simple deterministic code over fancy optimization.
+- The current baseline variant is "{baseline_name}".
 
 Goal:
 - Keep all circles inside [0,1] x [0,1]
 - No overlaps
-- Try to improve the baseline sum of radii of {BASELINE_SUM:.6f}
+- Try to improve the baseline sum of radii of {baseline["sum"]:.6f}
 """
+
+
+class CirclePackingWeakBaselineEnv(CirclePackingBaselineEnv):
+    baseline_name = "weak_grid"
+
+
+class CirclePackingMultiBaselineEnv(CirclePackingBaselineEnv):
+    baseline_cycle = itertools.cycle(["strong_grid", "corners_edges", "staggered_rows"])
+
+    @classmethod
+    def create_initial_state(cls, problem_type: str) -> State:
+        if problem_type != "6":
+            raise ValueError("CirclePackingMultiBaselineEnv only supports problem_type='6'")
+        return _make_baseline_state(next(cls.baseline_cycle))
 
 
 def discover_circle_packing_baseline(
@@ -169,6 +243,68 @@ def discover_circle_packing_baseline(
         num_cpus_per_task=num_cpus_per_task,
         eval_timeout=530,
         experiment_name=f"baseline-circle-packing-6-{sampler_type}-{backend_type}",
+        wandb_project=None,
+        backend_type=backend_type,
+        model_name=model_name,
+        local_model_path=local_model_path,
+        renderer_name=renderer_name,
+        sampler_type=sampler_type,
+        num_epochs=num_steps,
+        group_size=group_size,
+        groups_per_batch=groups_per_batch,
+    )
+    discover(config)
+
+
+def discover_circle_packing_weak_baseline(
+    *,
+    backend_type: str = "local_inference",
+    model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct",
+    local_model_path: str | None = None,
+    renderer_name: str | None = "qwen3_instruct",
+    sampler_type: str = "puct",
+    num_steps: int = 10,
+    group_size: int = 1,
+    groups_per_batch: int = 2,
+    num_cpus_per_task: int = 1,
+):
+    config = DiscoverConfig(
+        env_type=CirclePackingWeakBaselineEnv,
+        problem_type="6",
+        num_cpus_per_task=num_cpus_per_task,
+        eval_timeout=530,
+        experiment_name=f"weak-baseline-circle-packing-6-{sampler_type}-{backend_type}",
+        wandb_project=None,
+        backend_type=backend_type,
+        model_name=model_name,
+        local_model_path=local_model_path,
+        renderer_name=renderer_name,
+        sampler_type=sampler_type,
+        num_epochs=num_steps,
+        group_size=group_size,
+        groups_per_batch=groups_per_batch,
+    )
+    discover(config)
+
+
+def discover_circle_packing_multi_baseline(
+    *,
+    backend_type: str = "local_inference",
+    model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct",
+    local_model_path: str | None = None,
+    renderer_name: str | None = "qwen3_instruct",
+    sampler_type: str = "puct",
+    num_steps: int = 10,
+    group_size: int = 1,
+    groups_per_batch: int = 3,
+    num_cpus_per_task: int = 1,
+):
+    config = DiscoverConfig(
+        env_type=CirclePackingMultiBaselineEnv,
+        problem_type="6",
+        num_cpus_per_task=num_cpus_per_task,
+        eval_timeout=530,
+        experiment_name=f"multi-baseline-circle-packing-6-{sampler_type}-{backend_type}",
         wandb_project=None,
         backend_type=backend_type,
         model_name=model_name,
