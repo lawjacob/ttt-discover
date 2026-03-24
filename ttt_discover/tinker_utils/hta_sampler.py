@@ -310,15 +310,37 @@ class HTASampler(StateSampler):
             self.alpha = max(self.inter_fraction_floor, self.alpha - 0.5 * self.alpha_step)
         self.alpha = float(np.clip(self.alpha, self.inter_fraction_floor, self.inter_fraction_ceiling))
 
+    def _normalized_niche_best_rewards(self) -> dict[str, float]:
+        finite_rewards = {
+            nid: float(stats.best_reward)
+            for nid, stats in self._niches.items()
+            if math.isfinite(float(stats.best_reward))
+        }
+        if not finite_rewards:
+            return {nid: 0.0 for nid in self._niches}
+        reward_values = np.array(list(finite_rewards.values()), dtype=float)
+        lo = float(np.min(reward_values))
+        hi = float(np.max(reward_values))
+        if hi - lo <= 1e-12:
+            normalized = {nid: 1.0 for nid in finite_rewards}
+        else:
+            normalized = {nid: (reward - lo) / (hi - lo) for nid, reward in finite_rewards.items()}
+        out = {nid: 0.0 for nid in self._niches}
+        out.update(normalized)
+        return out
+
     def _target_niche_distribution(self, niche_dist: dict[str, float]) -> dict[str, float]:
         if not self._niches:
             return {}
+        normalized_best_rewards = self._normalized_niche_best_rewards()
         scores: dict[str, float] = {}
         for nid, stats in self._niches.items():
+            if self._best_frontier_in_niche(nid) is None:
+                continue
             diversity_deficit = 1.0 - niche_dist.get(nid, 0.0)
             stagnation_score = min(1.0, stats.stagnation / max(1.0, self.stagnation_window))
             score = (
-                0.25 * self._safe(stats.best_reward)
+                0.25 * normalized_best_rewards.get(nid, 0.0)
                 + 0.20 * stats.progress
                 + 0.20 * stats.uncertainty
                 + 0.15 * stagnation_score
@@ -328,9 +350,19 @@ class HTASampler(StateSampler):
         score_values = np.array(list(scores.values()), dtype=float)
         if score_values.size == 0:
             return {}
+        finite_mask = np.isfinite(score_values)
+        if not finite_mask.any():
+            uniform = 1.0 / len(scores)
+            return {nid: uniform for nid in scores}
+        finite_scores = score_values[finite_mask]
+        score_values = np.where(finite_mask, score_values, np.min(finite_scores) - 1.0)
         score_values = score_values - np.max(score_values)
-        probs = np.exp(score_values)
-        probs = probs / probs.sum()
+        probs = np.exp(np.clip(score_values, -50.0, 50.0))
+        total = float(np.sum(probs))
+        if not math.isfinite(total) or total <= 0.0:
+            uniform = 1.0 / len(scores)
+            return {nid: uniform for nid in scores}
+        probs = probs / total
         return {nid: float(p) for nid, p in zip(scores.keys(), probs)}
 
     def _pick_inter_niche(self, num_states: int, niche_dist: dict[str, float]) -> list[State]:
