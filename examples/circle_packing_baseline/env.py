@@ -52,6 +52,29 @@ def run_packing() -> tuple[np.ndarray, np.ndarray, float]:
     return centers, radii, sum_radii
 ```"""
 
+
+def _packing_signature(centers: list[list[float]], radii: list[float], baseline_name: str | None = None) -> list[float | str]:
+    signature: list[float | str] = []
+    if baseline_name is not None:
+        signature.append(baseline_name)
+    for x, y in centers:
+        signature.extend([float(x), float(y)])
+    signature.extend(float(r) for r in radii)
+    return signature
+
+
+def _state_baseline_name(state: State, default: str) -> str:
+    construction = getattr(state, "construction", None)
+    if isinstance(construction, dict):
+        baseline_name = construction.get("baseline")
+        if isinstance(baseline_name, str) and baseline_name in BASELINE_LIBRARY:
+            return baseline_name
+    if isinstance(construction, list) and construction:
+        first = construction[0]
+        if isinstance(first, str) and first in BASELINE_LIBRARY:
+            return first
+    return default
+
 BASELINE_LIBRARY: dict[str, dict] = {
     "strong_grid": {
         "name": "strong_grid",
@@ -117,7 +140,7 @@ def _make_baseline_state(baseline_name: str) -> State:
     baseline = BASELINE_LIBRARY[baseline_name]
     return State(
         timestep=-1,
-        construction={"baseline": baseline_name, "centers": baseline["centers"], "radii": baseline["radii"]},
+        construction=_packing_signature(baseline["centers"], baseline["radii"], baseline_name),
         code=baseline["code"],
         value=baseline["sum"],
         observation=(
@@ -157,7 +180,7 @@ class CirclePackingBaselineReward(SandboxRewardEvaluator):
             "correctness": 1.0,
             "raw_score": sum_of_radii,
             "msg": f"Success; raw_score={sum_of_radii}",
-            "result_construction": [],
+            "result_construction": _packing_signature(centers.tolist(), radii.tolist()),
             "stdout": getattr(self, "_last_stdout", ""),
         }
 
@@ -175,7 +198,7 @@ class CirclePackingBaselineEnv(Environment):
 
     def get_question(self) -> str:
         validator_src = inspect.getsource(validate_packing)
-        baseline_name = self.initial_state.construction.get("baseline", self.baseline_name)
+        baseline_name = _state_baseline_name(self.initial_state, self.baseline_name)
         baseline = BASELINE_LIBRARY[baseline_name]
         state_ctx = self.initial_state.to_prompt(max(1.05, baseline["sum"] + 0.05), metric_name="sum of radii")
 
