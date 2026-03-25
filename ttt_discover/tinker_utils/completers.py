@@ -81,17 +81,48 @@ class LocalHFTokenCompleter(TokenCompleter):
         from transformers import AutoModelForCausalLM
 
         self._torch = torch
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_name_or_path,
-            torch_dtype="auto",
-            device_map=self.device_map,
-            local_files_only=False,
-        )
+        load_kwargs = {
+            "torch_dtype": "auto",
+            "local_files_only": False,
+        }
+
+        # For a single Colab GPU, loading the whole model onto one device is
+        # more reliable than `device_map="auto"`, which can leave meta tensors
+        # around for some model sizes/configurations.
+        self._manual_device = None
+        if self.device_map == "auto" and torch.cuda.is_available() and torch.cuda.device_count() == 1:
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_name_or_path,
+                **load_kwargs,
+            )
+            self._manual_device = torch.device("cuda:0")
+            self._model.to(self._manual_device)
+        else:
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_name_or_path,
+                device_map=self.device_map,
+                **load_kwargs,
+            )
+
         if self._model.generation_config.pad_token_id is None:
             pad_token_id = self.tokenizer.pad_token_id
             if pad_token_id is None:
                 pad_token_id = self.tokenizer.eos_token_id
             self._model.generation_config.pad_token_id = pad_token_id
+
+    def _input_device(self):
+        if self._manual_device is not None:
+            return self._manual_device
+        try:
+            emb_device = self._model.get_input_embeddings().weight.device
+            if emb_device.type != "meta":
+                return emb_device
+        except Exception:
+            pass
+        for param in self._model.parameters():
+            if param.device.type != "meta":
+                return param.device
+        raise RuntimeError("Could not determine a real device for local inference model")
 
     def _encode_stop_sequences(self, stop: StopCondition) -> list[list[int]]:
         encoded: list[list[int]] = []
@@ -108,7 +139,7 @@ class LocalHFTokenCompleter(TokenCompleter):
         from transformers import StoppingCriteriaList
 
         prompt_tokens = _flatten_text_tokens(model_input)
-        prompt = self._torch.tensor([prompt_tokens], device=self._model.device)
+        prompt = self._torch.tensor([prompt_tokens], device=self._input_device())
         attention_mask = self._torch.ones_like(prompt)
         stop_sequences = self._encode_stop_sequences(stop)
         stopping_criteria = StoppingCriteriaList([_StopOnTokenSequence(stop_sequences)])
