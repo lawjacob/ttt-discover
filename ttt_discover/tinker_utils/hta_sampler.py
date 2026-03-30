@@ -201,7 +201,8 @@ class HTASampler(StateSampler):
         self._state_to_lineage: dict[str, str] = {}
         self._T = 0
         self._lock = threading.Lock()
-        self._anchor_dim = 8
+        example_state = self._states[0] if self._states else create_initial_state(self.env_type, self.problem_type)
+        self._anchor_dim = int(len(self._behavior_vector(example_state)))
         self._anchors = self._build_anchors()
         self._parent_credit: dict[str, float] = {}
         self._edge_credit: dict[str, float] = {}
