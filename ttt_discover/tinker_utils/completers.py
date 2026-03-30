@@ -9,6 +9,7 @@ Evals and other code should use the appropriate interface.
 import asyncio
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -174,6 +175,8 @@ class GeminiTokenCompleter(TokenCompleter):
     max_new_tokens: int = 2048
     temperature: float = 1.0
     api_base: str = "https://generativelanguage.googleapis.com/v1beta"
+    max_retries: int = 4
+    retry_base_delay_seconds: float = 2.0
 
     def __post_init__(self) -> None:
         self._api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
@@ -233,21 +236,31 @@ class GeminiTokenCompleter(TokenCompleter):
             f"{self.api_base}/{self._model_path}:generateContent?"
             f"{urllib.parse.urlencode({'key': self._api_key})}"
         )
-        request = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                response_data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Gemini API request failed ({exc.code}): {body}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"Gemini API request failed: {exc.reason}") from exc
-        return self._extract_text(response_data)
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            request = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=120) as response:
+                    response_data = json.loads(response.read().decode("utf-8"))
+                return self._extract_text(response_data)
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                is_retryable = exc.code in {429, 500, 503}
+                last_error = RuntimeError(f"Gemini API request failed ({exc.code}): {body}")
+                if not is_retryable or attempt == self.max_retries:
+                    raise last_error from exc
+            except urllib.error.URLError as exc:
+                last_error = RuntimeError(f"Gemini API request failed: {exc.reason}")
+                if attempt == self.max_retries:
+                    raise last_error from exc
+            time.sleep(self.retry_base_delay_seconds * (2 ** attempt))
+        assert last_error is not None
+        raise last_error
 
     async def __call__(self, model_input: tinker.ModelInput, stop: StopCondition) -> TokensWithLogprobs:
         prompt_text = self._decode_prompt(model_input)

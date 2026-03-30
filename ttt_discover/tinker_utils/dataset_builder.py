@@ -1,3 +1,4 @@
+import ast
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Literal, Sequence
@@ -164,7 +165,9 @@ def last_codeblock_postprocess(input_text, codeblock_seps=['python', 'cpp', 'jav
     """
     languages_pattern = '|'.join(map(re.escape, codeblock_seps))
     codeblock_start = f'```({languages_pattern})'
-    pattern = re.compile(codeblock_start + r'\n(?!```)(.*?)(?:\n```)?(?=\n```|$)', re.DOTALL)
+    strict_pattern = re.compile(codeblock_start + r'\n(?!```)(.*?)\n```(?:\s|$)', re.DOTALL)
+    loose_pattern = re.compile(codeblock_start + r'\n(?!```)(.*?)(?:\n```)?(?=\n```|$)', re.DOTALL)
+    pattern = strict_pattern if last_response_strict else loose_pattern
     matches = list(pattern.finditer(input_text))
 
     if matches:
@@ -316,11 +319,24 @@ class Environment(ProblemEnv):
     def _should_keep_code_separators(self) -> bool:
         """Whether to keep ```language separators in parsed code. Override if needed."""
         return True
+
+    def _strip_code_fence(self, parsed_code: str) -> str:
+        match = re.search(r"```[A-Za-z0-9_+-]*\n([\s\S]*?)\n```", parsed_code.strip())
+        if match:
+            return match.group(1)
+        return parsed_code
     
     def check_format(self, parsed_code: str) -> bool:
         """Check if parsed code has valid format."""
         if (parsed_code is None) or (parsed_code.strip() == ''):
             return False
+        languages = self._get_code_languages()
+        if "python" in languages:
+            code_to_parse = self._strip_code_fence(parsed_code)
+            try:
+                ast.parse(code_to_parse)
+            except SyntaxError:
+                return False
         return True
     
     async def check_answer(self, parsed_code: str, step: int) -> VerifyResult:
