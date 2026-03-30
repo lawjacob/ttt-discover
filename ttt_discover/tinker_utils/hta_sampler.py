@@ -605,6 +605,13 @@ class HTASampler(StateSampler):
         return by_value[:k]
 
     def _behavior_vector(self, state: State) -> np.ndarray:
+        descriptor_fn = getattr(self.env_type, "behavior_descriptor", None)
+        if callable(descriptor_fn):
+            descriptor = descriptor_fn(state)
+            if descriptor is not None:
+                vec = np.array([float(x) for x in descriptor], dtype=float)
+                norm = np.linalg.norm(vec)
+                return vec if norm <= 0 else vec / norm
         code = getattr(state, "code", "") or ""
         observation = getattr(state, "observation", "") or ""
         construction = getattr(state, "construction", None)

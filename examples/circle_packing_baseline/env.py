@@ -63,6 +63,43 @@ def _packing_signature(centers: list[list[float]], radii: list[float], baseline_
     return signature
 
 
+def packing_behavior_descriptor_from_state(state: State) -> list[float] | None:
+    construction = getattr(state, "construction", None)
+    if not isinstance(construction, list):
+        return None
+    values = construction[:]
+    if values and isinstance(values[0], str):
+        values = values[1:]
+    numeric = [float(x) for x in values if isinstance(x, (int, float))]
+    if len(numeric) < 18:
+        return None
+
+    xs = np.array(numeric[0:12:2], dtype=float)
+    ys = np.array(numeric[1:12:2], dtype=float)
+    radii = np.array(numeric[12:18], dtype=float)
+    centers = np.stack([xs, ys], axis=1)
+
+    pairwise_gaps: list[float] = []
+    for i in range(len(radii)):
+        for j in range(i + 1, len(radii)):
+            dist = float(np.linalg.norm(centers[i] - centers[j]))
+            pairwise_gaps.append(dist - float(radii[i] + radii[j]))
+    min_gap = min(pairwise_gaps) if pairwise_gaps else 0.0
+
+    wall_clearances: list[float] = []
+    for (x, y), r in zip(centers, radii):
+        wall_clearances.extend([x - r, y - r, 1.0 - (x + r), 1.0 - (y + r)])
+    mean_wall_clearance = float(np.mean(wall_clearances)) if wall_clearances else 0.0
+
+    descriptor = [
+        float(np.clip(np.mean(radii), 0.0, 1.0)),
+        float(np.clip(np.std(radii), 0.0, 1.0)),
+        float(np.clip(0.5 + 0.5 * np.tanh(4.0 * min_gap), 0.0, 1.0)),
+        float(np.clip(0.5 + 0.5 * np.tanh(4.0 * mean_wall_clearance), 0.0, 1.0)),
+    ]
+    return descriptor
+
+
 def _state_baseline_name(state: State, default: str) -> str:
     construction = getattr(state, "construction", None)
     if isinstance(construction, dict):
@@ -195,6 +232,10 @@ class CirclePackingBaselineEnv(Environment):
         if problem_type != "6":
             raise ValueError("CirclePackingBaselineEnv only supports problem_type='6'")
         return _make_baseline_state(cls.baseline_name)
+
+    @staticmethod
+    def behavior_descriptor(state: State) -> list[float] | None:
+        return packing_behavior_descriptor_from_state(state)
 
     def get_question(self) -> str:
         validator_src = inspect.getsource(validate_packing)

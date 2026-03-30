@@ -506,6 +506,11 @@ class MAPElitesIslandsSampler(StateSampler):
         return None
 
     def _behavior_descriptor(self, state: State) -> tuple[float, float, float, float]:
+        descriptor_fn = getattr(self.env_type, "behavior_descriptor", None)
+        if callable(descriptor_fn):
+            descriptor = descriptor_fn(state)
+            if descriptor is not None and len(descriptor) >= 4:
+                return tuple(float(x) for x in descriptor[:4])
         construction = getattr(state, "construction", None)
         if isinstance(construction, list):
             values = construction[:]
