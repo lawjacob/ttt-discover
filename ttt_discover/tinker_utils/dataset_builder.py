@@ -42,13 +42,17 @@ class DatasetConfig:
     timeout: float = 8000.0 # Timeout for async grading, not sandbox timeout
     convo_prefix: Any = None
     gpu_mode_score_scale: float = 3000.0
-    sampler_type: str = "hta"  # "puct" or "hta"
+    sampler_type: str = "hta"  # "puct", "hta", or "map_elites_islands"
     hta_num_niches: int = 32
     hta_alpha_step: float = 0.05
     hta_stagnation_window: int = 15
     hta_inter_fraction_floor: float = 0.2
     hta_inter_fraction_ceiling: float = 0.8
     hta_commit_horizon: int = 1
+    map_elites_num_islands: int = 4
+    map_elites_cells_per_dim: int = 4
+    map_elites_migration_interval: int = 5
+    map_elites_migration_top_k: int = 1
 
 
 class SingleProblemDataset(RLDataset):
@@ -129,6 +133,10 @@ class SingleProblemDatasetBuilder(RLDatasetBuilder):
             "inter_fraction_floor": self.config.hta_inter_fraction_floor,
             "inter_fraction_ceiling": self.config.hta_inter_fraction_ceiling,
             "commit_horizon": self.config.hta_commit_horizon,
+            "num_islands": self.config.map_elites_num_islands,
+            "cells_per_dim": self.config.map_elites_cells_per_dim,
+            "migration_interval": self.config.map_elites_migration_interval,
+            "migration_top_k": self.config.map_elites_migration_top_k,
         }
         return get_or_create_sampler_with_default(
             log_path=self.config.log_path,

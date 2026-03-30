@@ -57,13 +57,17 @@ class DiscoverConfig:
     problem_type: str = "26"
     num_cpus_per_task: int = 0
     eval_timeout: int = 1000
-    sampler_type: Literal["puct", "hta"] = "hta"
+    sampler_type: Literal["puct", "hta", "map_elites_islands"] = "hta"
     hta_num_niches: int = 32
     hta_alpha_step: float = 0.05
     hta_stagnation_window: int = 15
     hta_inter_fraction_floor: float = 0.2
     hta_inter_fraction_ceiling: float = 0.8
     hta_commit_horizon: int = 1
+    map_elites_num_islands: int = 4
+    map_elites_cells_per_dim: int = 4
+    map_elites_migration_interval: int = 5
+    map_elites_migration_top_k: int = 1
 
 
 def init_ray(num_cpus_per_task: int, env_type: str):
@@ -148,6 +152,10 @@ async def discover_impl(config: DiscoverConfig):
         hta_inter_fraction_floor=config.hta_inter_fraction_floor,
         hta_inter_fraction_ceiling=config.hta_inter_fraction_ceiling,
         hta_commit_horizon=config.hta_commit_horizon,
+        map_elites_num_islands=config.map_elites_num_islands,
+        map_elites_cells_per_dim=config.map_elites_cells_per_dim,
+        map_elites_migration_interval=config.map_elites_migration_interval,
+        map_elites_migration_top_k=config.map_elites_migration_top_k,
     )
     dataset_builder = get_single_problem_dataset_builder(dataset_config)
 
