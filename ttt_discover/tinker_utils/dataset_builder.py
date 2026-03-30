@@ -124,8 +124,10 @@ class SingleProblemDatasetBuilder(RLDatasetBuilder):
         )
         return dataset
 
-    def _get_sampler(self) -> StateSampler:
-        """Get the appropriate sampler; env_type is already set on config."""
+def _get_sampler(self) -> StateSampler:
+    """Get the appropriate sampler; env_type is already set on config."""
+    sampler_kwargs: dict[str, Any]
+    if self.config.sampler_type == "hta":
         sampler_kwargs = {
             "num_niches": self.config.hta_num_niches,
             "alpha_step": self.config.hta_alpha_step,
@@ -133,19 +135,25 @@ class SingleProblemDatasetBuilder(RLDatasetBuilder):
             "inter_fraction_floor": self.config.hta_inter_fraction_floor,
             "inter_fraction_ceiling": self.config.hta_inter_fraction_ceiling,
             "commit_horizon": self.config.hta_commit_horizon,
+        }
+    elif self.config.sampler_type == "map_elites_islands":
+        sampler_kwargs = {
             "num_islands": self.config.map_elites_num_islands,
             "cells_per_dim": self.config.map_elites_cells_per_dim,
             "migration_interval": self.config.map_elites_migration_interval,
             "migration_top_k": self.config.map_elites_migration_top_k,
         }
-        return get_or_create_sampler_with_default(
-            log_path=self.config.log_path,
-            env_type=self.config.env_type,
-            batch_size=self.config.batch_size,
-            problem_type=self.config.problem_type,
-            sampler_type=self.config.sampler_type,
-            sampler_kwargs=sampler_kwargs,
-        )
+    else:
+        sampler_kwargs = {}
+
+    return get_or_create_sampler_with_default(
+        log_path=self.config.log_path,
+        env_type=self.config.env_type,
+        batch_size=self.config.batch_size,
+        problem_type=self.config.problem_type,
+        sampler_type=self.config.sampler_type,
+        sampler_kwargs=sampler_kwargs,
+    )
 
 
 def get_single_problem_dataset_builder(
