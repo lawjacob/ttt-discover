@@ -7,8 +7,10 @@ Evals and other code should use the appropriate interface.
 """
 
 import asyncio
+import collections
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -170,6 +172,10 @@ class LocalHFTokenCompleter(TokenCompleter):
 
 @dataclass
 class GeminiTokenCompleter(TokenCompleter):
+    _rate_limit_lock = threading.Lock()
+    _minute_request_times: dict[str, collections.deque[float]] = {}
+    _day_request_times: dict[str, collections.deque[float]] = {}
+
     model_name: str
     tokenizer: Tokenizer
     max_new_tokens: int = 2048
@@ -177,6 +183,8 @@ class GeminiTokenCompleter(TokenCompleter):
     api_base: str = "https://generativelanguage.googleapis.com/v1beta"
     max_retries: int = 4
     retry_base_delay_seconds: float = 2.0
+    requests_per_minute: int = 5
+    requests_per_day: int = 20
 
     def __post_init__(self) -> None:
         self._api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
@@ -184,6 +192,8 @@ class GeminiTokenCompleter(TokenCompleter):
             raise ValueError(
                 "Gemini backend requires GEMINI_API_KEY or GOOGLE_API_KEY in the environment"
             )
+        self.requests_per_minute = int(os.environ.get("GEMINI_RATE_LIMIT_RPM", self.requests_per_minute))
+        self.requests_per_day = int(os.environ.get("GEMINI_RATE_LIMIT_RPD", self.requests_per_day))
         self._model_path = self.model_name
         if not self._model_path.startswith("models/"):
             self._model_path = f"models/{self._model_path}"
@@ -230,7 +240,41 @@ class GeminiTokenCompleter(TokenCompleter):
             raise RuntimeError(f"Gemini returned no text parts (finish_reason={finish_reason!r})")
         return "".join(texts)
 
+    def _wait_for_rate_limit_slot(self) -> None:
+        minute_window = 60.0
+        day_window = 24.0 * 60.0 * 60.0
+        key = self._api_key
+
+        while True:
+            with self._rate_limit_lock:
+                now = time.time()
+                minute_times = self._minute_request_times.setdefault(key, collections.deque())
+                day_times = self._day_request_times.setdefault(key, collections.deque())
+
+                while minute_times and now - minute_times[0] >= minute_window:
+                    minute_times.popleft()
+                while day_times and now - day_times[0] >= day_window:
+                    day_times.popleft()
+
+                if len(day_times) >= self.requests_per_day:
+                    oldest_day = day_times[0]
+                    retry_after = max(0.0, day_window - (now - oldest_day))
+                    raise RuntimeError(
+                        "Gemini local rate limiter reached the daily cap "
+                        f"({self.requests_per_day} requests / 24h). Retry in about {retry_after / 3600:.1f}h."
+                    )
+
+                if len(minute_times) < self.requests_per_minute:
+                    minute_times.append(now)
+                    day_times.append(now)
+                    return
+
+                wait_seconds = max(0.0, minute_window - (now - minute_times[0])) + 0.05
+
+            time.sleep(wait_seconds)
+
     def _generate_sync(self, prompt_text: str, stop: StopCondition) -> str:
+        self._wait_for_rate_limit_slot()
         payload = json.dumps(self._request_payload(prompt_text, stop)).encode("utf-8")
         url = (
             f"{self.api_base}/{self._model_path}:generateContent?"
