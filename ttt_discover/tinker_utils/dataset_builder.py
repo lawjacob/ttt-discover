@@ -47,6 +47,7 @@ class DatasetConfig:
     hta_stagnation_window: int = 15
     hta_inter_fraction_floor: float = 0.2
     hta_inter_fraction_ceiling: float = 0.8
+    hta_commit_horizon: int = 1
 
 
 class SingleProblemDataset(RLDataset):
@@ -126,6 +127,7 @@ class SingleProblemDatasetBuilder(RLDatasetBuilder):
             "stagnation_window": self.config.hta_stagnation_window,
             "inter_fraction_floor": self.config.hta_inter_fraction_floor,
             "inter_fraction_ceiling": self.config.hta_inter_fraction_ceiling,
+            "commit_horizon": self.config.hta_commit_horizon,
         }
         return get_or_create_sampler_with_default(
             log_path=self.config.log_path,
@@ -232,9 +234,12 @@ class Environment(ProblemEnv):
         self.eval_timeout = config.eval_timeout
         self.log_path = config.log_path
         self.initial_state = initial_state
+        self.seed_state = initial_state
         self.sampler = sampler
         self.state = initial_state
         self.problem_type = config.problem_type
+        self._commit_horizon = max(1, int(getattr(config, "hta_commit_horizon", 1)))
+        self._commit_step = 0
     
     @abstractmethod
     def get_question(self) -> str:
@@ -296,11 +301,12 @@ class Environment(ProblemEnv):
             "reward": outs.reward,
             "correctness": correctness,
             "raw_score": outs.raw_score if correctness > 0 else None,
-            "initial_raw_score": self.initial_state.value,
+            "initial_raw_score": self.seed_state.value,
             "msg": outs.msg,
             "prompt": self.get_question(),
             "response": message['content'],
             "parsed_code": parsed_code,
+            "commit_step": self._commit_step,
         }
     
     def _get_code_languages(self) -> list[str]:
@@ -431,29 +437,39 @@ class Environment(ProblemEnv):
         # Build metrics
         metrics = self._build_metrics(outs, correct_format, message, parsed_code)
         
-        # Create step result
-        step_result = StepResult(
-            reward=reward,
-            episode_done=True,
-            next_observation=tinker.ModelInput.empty(),
-            next_stop_condition=self.stop_condition,
-            metrics=metrics,
-        )
-        
+        episode_done = True
+        next_observation = tinker.ModelInput.empty()
+        next_stop_condition = self.stop_condition
+
         # Update sampler with new state if we have valid result
         if correctness > 0:
             try:
                 next_state = self._create_next_state(step_idx, parsed_code, outs)
-                self.sampler.update_states([next_state], [self.initial_state], save=False)
+                parent_state = self.state
+                self.sampler.update_states([next_state], [parent_state], save=False)
+                self.state = next_state
+                self._commit_step += 1
+                if (
+                    getattr(self.config, "sampler_type", "") == "hta"
+                    and self._commit_step < self._commit_horizon
+                ):
+                    episode_done = False
+                    next_observation, next_stop_condition = await self.initial_observation()
             except Exception as e:
                 logger.warning(f"Failed to create next state: {e}")
                 if hasattr(self.sampler, 'record_failed_rollout'):
-                    self.sampler.record_failed_rollout(self.initial_state)
+                    self.sampler.record_failed_rollout(self.state)
         elif hasattr(self.sampler, 'record_failed_rollout'):
             # Record that we tried this parent but got no valid child (for PUCT visit counts)
-            self.sampler.record_failed_rollout(self.initial_state)
-        
-        return step_result
+            self.sampler.record_failed_rollout(self.state)
+
+        return StepResult(
+            reward=reward,
+            episode_done=episode_done,
+            next_observation=next_observation,
+            next_stop_condition=next_stop_condition,
+            metrics=metrics,
+        )
     
     def get_reference_answer(self) -> str:
         """Return the reference answer for logging purposes."""

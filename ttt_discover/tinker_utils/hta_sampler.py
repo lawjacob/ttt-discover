@@ -34,6 +34,14 @@ class NicheStats:
     uncertainty: float = 1.0
     stagnation: int = 0
     live_lineages: set[str] = field(default_factory=set)
+    attempts: int = 0
+    valid_count: int = 0
+    improve_count: int = 0
+    total_positive_gain: float = 0.0
+    ewma_valid: float = 0.5
+    ewma_improve: float = 0.35
+    ewma_gain: float = 0.1
+    avg_wait_time: float = 3.0
 
     def to_dict(self) -> dict:
         return {
@@ -43,6 +51,14 @@ class NicheStats:
             "uncertainty": self.uncertainty,
             "stagnation": self.stagnation,
             "live_lineages": sorted(self.live_lineages),
+            "attempts": self.attempts,
+            "valid_count": self.valid_count,
+            "improve_count": self.improve_count,
+            "total_positive_gain": self.total_positive_gain,
+            "ewma_valid": self.ewma_valid,
+            "ewma_improve": self.ewma_improve,
+            "ewma_gain": self.ewma_gain,
+            "avg_wait_time": self.avg_wait_time,
         }
 
     @classmethod
@@ -54,6 +70,14 @@ class NicheStats:
             uncertainty=float(d.get("uncertainty", 1.0)),
             stagnation=int(d.get("stagnation", 0)),
             live_lineages=set(d.get("live_lineages", [])),
+            attempts=int(d.get("attempts", 0)),
+            valid_count=int(d.get("valid_count", 0)),
+            improve_count=int(d.get("improve_count", 0)),
+            total_positive_gain=float(d.get("total_positive_gain", 0.0)),
+            ewma_valid=float(d.get("ewma_valid", 0.5)),
+            ewma_improve=float(d.get("ewma_improve", 0.35)),
+            ewma_gain=float(d.get("ewma_gain", 0.1)),
+            avg_wait_time=float(d.get("avg_wait_time", 3.0)),
         )
 
 
@@ -66,9 +90,18 @@ class Lineage:
     depth: int = 0
     recent_improvement: float = 0.0
     credit_score: float = 0.0
+    uncertainty: float = 1.0
     stagnant_steps: int = 0
     parent_lineage_id: Optional[str] = None
     operator_history: list[str] = field(default_factory=list)
+    attempts: int = 0
+    valid_count: int = 0
+    improve_count: int = 0
+    total_positive_gain: float = 0.0
+    ewma_valid: float = 0.5
+    ewma_improve: float = 0.35
+    ewma_gain: float = 0.1
+    avg_wait_time: float = 3.0
 
     def to_dict(self) -> dict:
         return {
@@ -79,9 +112,18 @@ class Lineage:
             "depth": self.depth,
             "recent_improvement": self.recent_improvement,
             "credit_score": self.credit_score,
+            "uncertainty": self.uncertainty,
             "stagnant_steps": self.stagnant_steps,
             "parent_lineage_id": self.parent_lineage_id,
             "operator_history": self.operator_history,
+            "attempts": self.attempts,
+            "valid_count": self.valid_count,
+            "improve_count": self.improve_count,
+            "total_positive_gain": self.total_positive_gain,
+            "ewma_valid": self.ewma_valid,
+            "ewma_improve": self.ewma_improve,
+            "ewma_gain": self.ewma_gain,
+            "avg_wait_time": self.avg_wait_time,
         }
 
     @classmethod
@@ -94,9 +136,18 @@ class Lineage:
             depth=int(d.get("depth", 0)),
             recent_improvement=float(d.get("recent_improvement", 0.0)),
             credit_score=float(d.get("credit_score", 0.0)),
+            uncertainty=float(d.get("uncertainty", 1.0)),
             stagnant_steps=int(d.get("stagnant_steps", 0)),
             parent_lineage_id=d.get("parent_lineage_id"),
             operator_history=d.get("operator_history", []),
+            attempts=int(d.get("attempts", 0)),
+            valid_count=int(d.get("valid_count", 0)),
+            improve_count=int(d.get("improve_count", 0)),
+            total_positive_gain=float(d.get("total_positive_gain", 0.0)),
+            ewma_valid=float(d.get("ewma_valid", 0.5)),
+            ewma_improve=float(d.get("ewma_improve", 0.35)),
+            ewma_gain=float(d.get("ewma_gain", 0.1)),
+            avg_wait_time=float(d.get("avg_wait_time", 3.0)),
         )
 
 
@@ -121,6 +172,9 @@ class HTASampler(StateSampler):
         stagnation_window: int = 15,
         inter_fraction_floor: float = 0.2,
         inter_fraction_ceiling: float = 0.8,
+        commit_horizon: int = 3,
+        ewma_decay: float = 0.8,
+        rescue_fraction: float = 0.15,
         resume_step: int | None = None,
     ):
         if num_niches <= 0:
@@ -136,6 +190,9 @@ class HTASampler(StateSampler):
         self.stagnation_window = stagnation_window
         self.inter_fraction_floor = inter_fraction_floor
         self.inter_fraction_ceiling = inter_fraction_ceiling
+        self.commit_horizon = max(1, int(commit_horizon))
+        self.ewma_decay = float(np.clip(ewma_decay, 0.0, 0.999))
+        self.rescue_fraction = float(np.clip(rescue_fraction, 0.0, 0.5))
 
         self._states: list[State] = []
         self._state_by_id: dict[str, State] = {}
@@ -150,6 +207,10 @@ class HTASampler(StateSampler):
         self._edge_credit: dict[str, float] = {}
         self._operator_credit: dict[str, float] = {}
         self._credit_decay = 0.97
+        self._valid_prior = (2.0, 2.0)
+        self._improve_prior = (1.5, 2.5)
+        self._gain_prior = 0.05
+        self._waiting_time_floor = 2.0
 
         if resume_step is not None:
             self._load(resume_step)
@@ -182,7 +243,26 @@ class HTASampler(StateSampler):
                 remaining = num_states - len(picked)
                 picked.extend(self._fallback_states(remaining))
 
-            return picked
+            unique: list[State] = []
+            seen: set[str] = set()
+            for state in picked:
+                if state.id in seen:
+                    continue
+                seen.add(state.id)
+                unique.append(state)
+                if len(unique) >= num_states:
+                    break
+
+            if len(unique) < num_states:
+                for state in self._fallback_states(num_states - len(unique)):
+                    if state.id in seen:
+                        continue
+                    seen.add(state.id)
+                    unique.append(state)
+                    if len(unique) >= num_states:
+                        break
+
+            return unique
 
     def update_states(self, states: list[State], parent_states: list[State], save: bool = True, step: int | None = None):
         if not states:
@@ -190,6 +270,7 @@ class HTASampler(StateSampler):
         assert len(states) == len(parent_states)
         with self._lock:
             for child, parent in zip(states, parent_states):
+                self._set_parent_info(child, parent)
                 self._register_state(child)
                 self._update_lineage(child, parent)
             self._decay_stats()
@@ -209,8 +290,11 @@ class HTASampler(StateSampler):
         with self._lock:
             niche_id = self._assign_niche(parent)
             niche = self._niches.setdefault(niche_id, NicheStats())
-            niche.visits += 1
-            niche.stagnation += 1
+            parent_lineage_id = self._state_to_lineage.get(parent.id)
+            lineage = self._lineages.get(parent_lineage_id) if parent_lineage_id is not None else None
+            self._update_attempt_statistics(niche, valid=False, improvement=0.0)
+            if lineage is not None:
+                self._update_attempt_statistics(lineage, valid=False, improvement=0.0)
             self._T += 1
             self._save(self._T)
 
@@ -222,10 +306,13 @@ class HTASampler(StateSampler):
         return f"niche_{bucket:03d}"
 
     def _register_state(self, state: State):
-        self._states.append(state)
-        self._state_by_id[state.id] = state
+        if state.id not in self._state_by_id:
+            self._states.append(state)
+            self._state_by_id[state.id] = state
         niche_id = self._assign_niche(state)
-        self._niches.setdefault(niche_id, NicheStats())
+        niche = self._niches.setdefault(niche_id, NicheStats())
+        if state.value is not None:
+            niche.best_reward = max(niche.best_reward, float(state.value))
 
     def _ensure_lineage_for_state(self, state: State, parent_lineage_id: Optional[str]):
         niche_id = self._assign_niche(state)
@@ -251,29 +338,68 @@ class HTASampler(StateSampler):
             return
 
         lineage = self._lineages[parent_lineage_id]
+        old_niche_id = lineage.niche_id
+        if old_niche_id != child_niche:
+            self._niches.setdefault(old_niche_id, NicheStats()).live_lineages.discard(lineage.id)
+            lineage.niche_id = child_niche
         lineage.frontier_state_id = child.id
         lineage.depth += 1
         improvement = 0.0
         if child.value is not None and parent.value is not None:
             improvement = float(child.value) - float(parent.value)
-        lineage.recent_improvement = 0.7 * lineage.recent_improvement + 0.3 * improvement
-        lineage.stagnant_steps = 0 if improvement > 0 else lineage.stagnant_steps + 1
         operator = self._operator_signature(parent, child)
         lineage.operator_history = (lineage.operator_history + [operator])[-8:]
-        lineage.credit_score = 0.7 * lineage.credit_score + 0.3 * self._credit_signal(parent, child, operator, improvement)
+        self._update_attempt_statistics(lineage, valid=True, improvement=improvement)
+        lineage.recent_improvement = self.ewma_decay * lineage.recent_improvement + (1.0 - self.ewma_decay) * improvement
+        lineage.credit_score = self.ewma_decay * lineage.credit_score + (1.0 - self.ewma_decay) * self._credit_signal(parent, child, operator, improvement)
 
         self._state_to_lineage[child.id] = lineage.id
 
         niche = self._niches.setdefault(child_niche, NicheStats())
-        niche.visits += 1
         niche.best_reward = max(niche.best_reward, float(child.value) if child.value is not None else float("-inf"))
-        niche.progress = 0.7 * niche.progress + 0.3 * max(0.0, improvement)
-        niche.uncertainty = 0.8 * niche.uncertainty + 0.2 * abs(improvement)
-        niche.stagnation = 0 if improvement > 0 else niche.stagnation + 1
         niche.live_lineages.add(lineage.id)
+        self._update_attempt_statistics(niche, valid=True, improvement=improvement)
 
         self._T += 1
         self._update_credit(parent, child, operator, improvement)
+
+    def _update_attempt_statistics(self, stats_obj: NicheStats | Lineage, *, valid: bool, improvement: float) -> None:
+        positive_gain = max(0.0, improvement)
+        decay = self.ewma_decay
+
+        stats_obj.attempts += 1
+        stats_obj.ewma_valid = decay * stats_obj.ewma_valid + (1.0 - decay) * float(valid)
+        if valid:
+            stats_obj.valid_count += 1
+
+        improved = valid and positive_gain > 1e-9
+        improve_signal = float(improved)
+        stats_obj.ewma_improve = decay * stats_obj.ewma_improve + (1.0 - decay) * improve_signal
+
+        if improved:
+            waiting_time = getattr(stats_obj, "stagnation", getattr(stats_obj, "stagnant_steps", 0)) + 1
+            stats_obj.improve_count += 1
+            stats_obj.total_positive_gain += positive_gain
+            stats_obj.ewma_gain = decay * stats_obj.ewma_gain + (1.0 - decay) * positive_gain
+            stats_obj.avg_wait_time = decay * stats_obj.avg_wait_time + (1.0 - decay) * max(1.0, float(waiting_time))
+            if isinstance(stats_obj, NicheStats):
+                stats_obj.progress = decay * stats_obj.progress + (1.0 - decay) * positive_gain
+                stats_obj.stagnation = 0
+            else:
+                stats_obj.stagnant_steps = 0
+        else:
+            if isinstance(stats_obj, NicheStats):
+                stats_obj.progress *= decay
+                stats_obj.stagnation += 1
+            else:
+                stats_obj.stagnant_steps += 1
+
+        if isinstance(stats_obj, NicheStats):
+            stats_obj.visits += 1
+        valid_std = self._beta_std(stats_obj.valid_count, stats_obj.attempts, *self._valid_prior)
+        improve_trials = max(1, stats_obj.valid_count)
+        improve_std = self._beta_std(stats_obj.improve_count, improve_trials, *self._improve_prior)
+        stats_obj.uncertainty = max(0.05, 0.5 * valid_std + 0.5 * improve_std)
 
     def _niche_distribution(self) -> dict[str, float]:
         visits = np.array([max(1, n.visits) for n in self._niches.values()], dtype=float)
@@ -281,6 +407,59 @@ class HTASampler(StateSampler):
         if total == 0:
             return {nid: 1.0 / max(1, len(self._niches)) for nid in self._niches}
         return {nid: v / total for nid, v in zip(self._niches.keys(), visits)}
+
+    @staticmethod
+    def _posterior_mean(successes: int, trials: int, alpha: float, beta: float) -> float:
+        return float((successes + alpha) / (trials + alpha + beta))
+
+    @staticmethod
+    def _beta_std(successes: int, trials: int, alpha: float, beta: float) -> float:
+        a = successes + alpha
+        b = max(0, trials - successes) + beta
+        total = a + b
+        return float(math.sqrt((a * b) / (total * total * (total + 1.0))))
+
+    def _valid_probability(self, stats_obj: NicheStats | Lineage) -> float:
+        posterior = self._posterior_mean(stats_obj.valid_count, stats_obj.attempts, *self._valid_prior)
+        blended = 0.5 * posterior + 0.5 * stats_obj.ewma_valid
+        return float(np.clip(blended, 0.05, 0.98))
+
+    def _improve_probability(self, stats_obj: NicheStats | Lineage, horizon: int | None = None) -> float:
+        horizon = self.commit_horizon if horizon is None else max(1, int(horizon))
+        trials = max(1, stats_obj.valid_count)
+        posterior = self._posterior_mean(stats_obj.improve_count, trials, *self._improve_prior)
+        wait_time = max(self._waiting_time_floor, stats_obj.avg_wait_time)
+        wait_prob = 1.0 - math.exp(-float(horizon) / wait_time)
+        blended = 0.5 * posterior + 0.5 * wait_prob
+        return float(np.clip(blended, 0.05, 0.98))
+
+    def _conditional_gain(self, stats_obj: NicheStats | Lineage) -> float:
+        if stats_obj.improve_count <= 0:
+            empirical = self._gain_prior
+        else:
+            empirical = max(self._gain_prior, stats_obj.total_positive_gain / stats_obj.improve_count)
+        return float(max(self._gain_prior, 0.5 * empirical + 0.5 * stats_obj.ewma_gain))
+
+    def _compute_cost(self, stats_obj: NicheStats | Lineage) -> float:
+        # Approximate compute cost from how many attempts are needed to obtain a valid sample.
+        return float((stats_obj.attempts + self._valid_prior[0]) / (stats_obj.valid_count + self._valid_prior[0]))
+
+    def _depth_cost(self, lineage: Lineage) -> float:
+        return float(max(1.0, 0.5 * math.sqrt(1.0 + lineage.depth) + 0.5 * lineage.avg_wait_time))
+
+    def _rescue_bonus(self, stats_obj: NicheStats | Lineage) -> float:
+        stagnant_steps = stats_obj.stagnation if isinstance(stats_obj, NicheStats) else stats_obj.stagnant_steps
+        normalized_wait = stagnant_steps / max(1.0, stats_obj.avg_wait_time)
+        return float(self.rescue_fraction * stats_obj.uncertainty * min(1.5, normalized_wait))
+
+    def _niche_expected_improvement_per_compute(self, niche_id: str) -> float:
+        stats = self._niches.get(niche_id)
+        if stats is None:
+            return 0.0
+        p_valid = self._valid_probability(stats)
+        p_improve = self._improve_probability(stats)
+        m_gain = self._conditional_gain(stats)
+        return (p_valid * p_improve * m_gain) / self._compute_cost(stats)
 
     def _update_alpha(self, niche_dist: dict[str, float]):
         # Adaptive diversity constraint: increase inter-niche allocation when
@@ -295,7 +474,10 @@ class HTASampler(StateSampler):
         diversity_gap = target_effective_niches - effective_niches
 
         stagnation = np.mean([n.stagnation for n in self._niches.values()]) if self._niches else 0.0
-        expected_gain = np.mean(
+        inter_gain = np.mean(
+            [self._niche_expected_improvement_per_compute(nid) for nid in self._niches]
+        ) if self._niches else 0.0
+        intra_gain = np.mean(
             [self._lineage_expected_improvement_per_depth(lin) for lin in self._lineages.values()]
         ) if self._lineages else 0.0
 
@@ -306,8 +488,10 @@ class HTASampler(StateSampler):
             )
         if stagnation > self.stagnation_window:
             self.alpha = min(self.inter_fraction_ceiling, self.alpha + self.alpha_step)
-        if diversity_gap <= 0 and expected_gain > 0:
+        if diversity_gap <= 0 and intra_gain > inter_gain * 1.05:
             self.alpha = max(self.inter_fraction_floor, self.alpha - 0.5 * self.alpha_step)
+        if inter_gain > intra_gain * 1.10:
+            self.alpha = min(self.inter_fraction_ceiling, self.alpha + 0.25 * self.alpha_step)
         self.alpha = float(np.clip(self.alpha, self.inter_fraction_floor, self.inter_fraction_ceiling))
 
     def _normalized_niche_best_rewards(self) -> dict[str, float]:
@@ -332,21 +516,15 @@ class HTASampler(StateSampler):
     def _target_niche_distribution(self, niche_dist: dict[str, float]) -> dict[str, float]:
         if not self._niches:
             return {}
-        normalized_best_rewards = self._normalized_niche_best_rewards()
         scores: dict[str, float] = {}
         for nid, stats in self._niches.items():
             if self._best_frontier_in_niche(nid) is None:
                 continue
-            diversity_deficit = 1.0 - niche_dist.get(nid, 0.0)
-            stagnation_score = min(1.0, stats.stagnation / max(1.0, self.stagnation_window))
-            score = (
-                0.25 * normalized_best_rewards.get(nid, 0.0)
-                + 0.20 * stats.progress
-                + 0.20 * stats.uncertainty
-                + 0.15 * stagnation_score
-                + 0.20 * diversity_deficit
-            )
-            scores[nid] = score
+            p_div = max(1e-3, 1.0 - niche_dist.get(nid, 0.0))
+            gain = self._niche_expected_improvement_per_compute(nid)
+            rescue = self._rescue_bonus(stats)
+            lambda_t = max(0.25, self.alpha)
+            scores[nid] = math.log(p_div) + (gain + rescue) / lambda_t
         score_values = np.array(list(scores.values()), dtype=float)
         if score_values.size == 0:
             return {}
@@ -395,7 +573,7 @@ class HTASampler(StateSampler):
                     if lid in used_lineages or lid not in self._lineages:
                         continue
                     lin = self._lineages[lid]
-                    score = self._lineage_expected_improvement_per_depth(lin)
+                    score = self._lineage_expected_improvement_per_depth(lin) + 0.25 * lin.uncertainty + self._rescue_bonus(lin)
                     candidates.append((score, lin))
                 candidates.sort(reverse=True, key=lambda x: x[0])
                 if not candidates:
@@ -476,16 +654,14 @@ class HTASampler(StateSampler):
         observed_gain = 0.0
         if frontier is not None and root is not None and frontier.value is not None and root.value is not None:
             observed_gain = max(0.0, float(frontier.value) - float(root.value))
-        predicted_progress = 0.5 * max(0.0, lineage.recent_improvement) + 0.5 * max(0.0, stats.progress)
-        expected_improvement = (
-            0.35 * max(0.0, lineage.recent_improvement)
-            + 0.25 * predicted_progress
-            + 0.15 * max(0.0, stats.uncertainty)
-            + 0.15 * max(0.0, lineage.credit_score)
-            + 0.10 * observed_gain
-        )
-        depth_cost = max(1.0, math.sqrt(1.0 + lineage.depth))
-        return expected_improvement / depth_cost
+        p_valid = self._valid_probability(lineage)
+        p_improve = self._improve_probability(lineage)
+        m_gain = self._conditional_gain(lineage)
+        promise = p_valid * p_improve * m_gain
+        promise += 0.1 * max(0.0, observed_gain)
+        promise += 0.1 * max(0.0, lineage.credit_score)
+        promise += 0.05 * max(0.0, stats.progress)
+        return promise / self._depth_cost(lineage)
 
     def _operator_signature(self, parent: State, child: State) -> str:
         if (parent.code or "") != (child.code or ""):
@@ -513,6 +689,8 @@ class HTASampler(StateSampler):
         for stats in self._niches.values():
             stats.progress *= self._credit_decay
             stats.uncertainty = max(0.05, stats.uncertainty * self._credit_decay)
+        for lineage in self._lineages.values():
+            lineage.uncertainty = max(0.05, lineage.uncertainty * self._credit_decay)
         self._parent_credit = {k: v * self._credit_decay for k, v in self._parent_credit.items() if v * self._credit_decay > 1e-6}
         self._edge_credit = {k: v * self._credit_decay for k, v in self._edge_credit.items() if v * self._credit_decay > 1e-6}
         self._operator_credit = {k: v * self._credit_decay for k, v in self._operator_credit.items() if v * self._credit_decay > 1e-6}
@@ -521,7 +699,14 @@ class HTASampler(StateSampler):
         to_remove = {
             lid
             for lid, lin in self._lineages.items()
-            if lin.stagnant_steps > self.stagnation_window and lin.credit_score <= 0 and lin.recent_improvement <= 0
+            if (
+                lin.attempts >= max(3, self.commit_horizon)
+                and lin.stagnant_steps > 2 * self.stagnation_window
+                and self._valid_probability(lin) < 0.15
+                and self._improve_probability(lin) < 0.15
+                and lin.credit_score <= 0
+                and lin.recent_improvement <= 0
+            )
         }
         if not to_remove:
             return
@@ -634,5 +819,19 @@ class HTASampler(StateSampler):
             if niche_dist:
                 p = np.array(list(niche_dist.values()), dtype=float)
                 stats["hta/effective_niches"] = float(math.exp(-(p * np.log(p + 1e-12)).sum()))
+            if self._niches:
+                inter_gains = [self._niche_expected_improvement_per_compute(nid) for nid in self._niches]
+                niche_valid = [self._valid_probability(stats_obj) for stats_obj in self._niches.values()]
+                niche_improve = [self._improve_probability(stats_obj) for stats_obj in self._niches.values()]
+                stats.update(_stats(inter_gains, "hta/inter_gain"))
+                stats.update(_stats(niche_valid, "hta/niche_p_valid"))
+                stats.update(_stats(niche_improve, "hta/niche_p_improve"))
+            if self._lineages:
+                lineage_gains = [self._lineage_expected_improvement_per_depth(lin) for lin in self._lineages.values()]
+                lineage_valid = [self._valid_probability(lin) for lin in self._lineages.values()]
+                lineage_improve = [self._improve_probability(lin) for lin in self._lineages.values()]
+                stats.update(_stats(lineage_gains, "hta/lineage_gain"))
+                stats.update(_stats(lineage_valid, "hta/lineage_p_valid"))
+                stats.update(_stats(lineage_improve, "hta/lineage_p_improve"))
             stats.update(_stats(buffer_values, "hta/buffer_value"))
             return stats

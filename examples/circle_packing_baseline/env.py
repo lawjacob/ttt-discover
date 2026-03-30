@@ -198,9 +198,10 @@ class CirclePackingBaselineEnv(Environment):
 
     def get_question(self) -> str:
         validator_src = inspect.getsource(validate_packing)
-        baseline_name = _state_baseline_name(self.initial_state, self.baseline_name)
+        current_state = self.state
+        baseline_name = _state_baseline_name(current_state, self.baseline_name)
         baseline = BASELINE_LIBRARY[baseline_name]
-        state_ctx = self.initial_state.to_prompt(max(1.05, baseline["sum"] + 0.05), metric_name="sum of radii")
+        state_ctx = current_state.to_prompt(max(1.05, baseline["sum"] + 0.05), metric_name="sum of radii")
 
         return f"""You are editing a working Python baseline for packing 6 circles in the unit square.
 
@@ -259,6 +260,7 @@ def discover_circle_packing_baseline(
     group_size: int = 1,
     groups_per_batch: int = 2,
     num_cpus_per_task: int = 1,
+    hta_commit_horizon: int = 1,
 ):
     config = DiscoverConfig(
         env_type=CirclePackingBaselineEnv,
@@ -272,6 +274,7 @@ def discover_circle_packing_baseline(
         local_model_path=local_model_path,
         renderer_name=renderer_name,
         sampler_type=sampler_type,
+        hta_commit_horizon=hta_commit_horizon,
         num_epochs=num_steps,
         group_size=group_size,
         groups_per_batch=groups_per_batch,
@@ -290,6 +293,7 @@ def discover_circle_packing_weak_baseline(
     group_size: int = 1,
     groups_per_batch: int = 2,
     num_cpus_per_task: int = 1,
+    hta_commit_horizon: int = 1,
 ):
     config = DiscoverConfig(
         env_type=CirclePackingWeakBaselineEnv,
@@ -303,6 +307,7 @@ def discover_circle_packing_weak_baseline(
         local_model_path=local_model_path,
         renderer_name=renderer_name,
         sampler_type=sampler_type,
+        hta_commit_horizon=hta_commit_horizon,
         num_epochs=num_steps,
         group_size=group_size,
         groups_per_batch=groups_per_batch,
@@ -321,6 +326,7 @@ def discover_circle_packing_multi_baseline(
     group_size: int = 1,
     groups_per_batch: int = 3,
     num_cpus_per_task: int = 1,
+    hta_commit_horizon: int = 1,
 ):
     config = DiscoverConfig(
         env_type=CirclePackingMultiBaselineEnv,
@@ -334,6 +340,7 @@ def discover_circle_packing_multi_baseline(
         local_model_path=local_model_path,
         renderer_name=renderer_name,
         sampler_type=sampler_type,
+        hta_commit_horizon=hta_commit_horizon,
         num_epochs=num_steps,
         group_size=group_size,
         groups_per_batch=groups_per_batch,

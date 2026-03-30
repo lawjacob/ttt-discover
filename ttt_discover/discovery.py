@@ -60,6 +60,7 @@ class DiscoverConfig:
     hta_stagnation_window: int = 15
     hta_inter_fraction_floor: float = 0.2
     hta_inter_fraction_ceiling: float = 0.8
+    hta_commit_horizon: int = 1
 
 
 def init_ray(num_cpus_per_task: int, env_type: str):
@@ -136,6 +137,7 @@ async def discover_impl(config: DiscoverConfig):
         hta_stagnation_window=config.hta_stagnation_window,
         hta_inter_fraction_floor=config.hta_inter_fraction_floor,
         hta_inter_fraction_ceiling=config.hta_inter_fraction_ceiling,
+        hta_commit_horizon=config.hta_commit_horizon,
     )
     dataset_builder = get_single_problem_dataset_builder(dataset_config)
 

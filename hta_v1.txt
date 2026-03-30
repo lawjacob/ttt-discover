@@ -1,0 +1,181 @@
+Hierarchical Trajectory Allocation (HTA) v1
+
+HTA treats search compute as a resource allocated at two levels:
+- across niches: where to search
+- within niches: which lineage to deepen
+
+The design goal is:
+- maximize expected improvement per unit resource
+- while keeping search diversity above a healthy level
+
+This v1 implementation is more principled than the earlier heuristic HTA prototype, but it is still not fully faithful to the intended algorithm because the surrounding rollout engine is still one-step and state-centric.
+
+1. Core objects
+
+Stable niches
+- Search states are embedded into a behavior descriptor and assigned to stable anchor niches.
+- Each niche stores:
+  - best reward seen
+  - visits / attempts
+  - valid sample count
+  - improvement count
+  - total positive gain
+  - EWMA validity rate
+  - EWMA improvement rate
+  - EWMA gain conditional on improvement
+  - uncertainty estimate
+  - stagnation age
+  - average waiting time to improvement
+  - live lineages
+
+Active lineages
+- A lineage is the unit of commitment.
+- Each lineage stores:
+  - root state
+  - frontier state
+  - depth
+  - recent improvement
+  - credit score
+  - validity / improvement / gain statistics
+  - uncertainty estimate
+  - average waiting time to improvement
+  - operator history
+
+2. HTA-v1 estimator stack
+
+We do not model “future progress” as one blunt scalar.
+Instead, for a niche or lineage c, we estimate:
+
+g(c) =
+    p_valid(c)
+    * p_improve_within_k(c | valid)
+    * m_gain(c | valid, improve)
+    / cost(c)
+
+where:
+- p_valid(c): probability the next expansion yields a valid/evaluable child
+- p_improve_within_k(c | valid): probability of a meaningful improvement within the next k committed steps, conditional on validity
+- m_gain(c | valid, improve): expected gain size conditional on valid improvement
+- cost(c): resource cost surrogate
+
+This decomposition is used because:
+- validity is a major bottleneck in code generation
+- improvements are sparse
+- gain magnitude and improvement probability should not be conflated
+
+3. Probability and gain estimators
+
+Validity
+- Estimated using a blend of:
+  - Beta-posterior mean from valid_count / attempts
+  - EWMA validity rate
+
+Improvement within k
+- Estimated using a blend of:
+  - Beta-posterior mean from improve_count / valid_count
+  - waiting-time model:
+    p(improve within k) = 1 - exp(-k / t_wait)
+  where t_wait is the EWMA average waiting time to improvement
+
+Conditional gain
+- Estimated from a blend of:
+  - empirical average positive gain
+  - EWMA gain
+  - optimistic floor prior
+
+Uncertainty
+- Estimated from Beta posterior standard deviations for validity and improvement
+- used as an exploration / rescue signal, not as the gain estimate itself
+
+4. Inter-niche allocation
+
+For each niche c, define an inter-niche gain estimate:
+- g_inter(c) = expected improvement per unit compute
+
+The target niche distribution q_t(c) is computed with a KL-like regularized form:
+- q_t(c) ∝ p_div(c) * exp((g_inter(c) + rescue(c)) / lambda_t)
+
+where:
+- p_div(c) is a diversity prior favoring under-covered niches
+- rescue(c) is a stagnation/uncertainty rescue bonus
+- lambda_t is tied to the current breadth controller alpha_t
+
+This is more principled than the earlier weighted softmax over reward/progress/uncertainty/stagnation terms.
+
+5. Intra-niche allocation
+
+For each lineage l, define:
+- g_intra(l) = expected improvement per unit depth
+
+The lineage score uses:
+- p_valid(l)
+- p_improve_within_k(l | valid)
+- m_gain(l | valid, improve)
+- depth cost
+- observed gain from root to frontier
+- credit score
+- niche-level progress context
+- uncertainty / rescue bonus
+
+This keeps HTA trajectory-centric in spirit, even though the outer rollout engine is still one-step.
+
+6. Controller
+
+alpha_t controls breadth vs depth:
+- larger alpha_t => more inter-niche allocation
+- smaller alpha_t => more intra-lineage commitment
+
+alpha_t is updated from:
+- effective number of niches
+- diversity gap relative to target coverage
+- average inter-niche gain
+- average intra-lineage gain
+- stagnation
+
+Interpretation:
+- if search collapses, increase breadth
+- if lineages are paying off, allow more depth
+
+7. Survival / false-negative protection
+
+A key failure mode is killing a lineage too early because local improvement probability looks low.
+
+HTA-v1 addresses this by:
+- using p(improve within k) rather than immediate improvement only
+- tracking waiting time to improvement
+- adding rescue bonuses from uncertainty + stagnation
+- using optimistic priors and probability floors
+- pruning only after stronger evidence of failure
+
+8. Resource surrogates
+
+Because the current codebase does not pass true runtime/token compute into the sampler, HTA-v1 uses approximate costs:
+- inter-niche cost: attempts required per valid sample
+- intra-lineage cost: blend of lineage depth and average waiting time to improvement
+
+This is an approximation. A more faithful version should use true measured compute and explicit committed rollout depth.
+
+9. What is implemented vs still missing
+
+Implemented in HTA-v1
+- conditional validity/improvement/gain estimators
+- waiting-time based p_improve_within_k
+- uncertainty-aware rescue bonuses
+- KL-like niche allocation
+- separate inter-niche and intra-lineage scoring
+- more conservative lineage pruning
+
+Still approximate / not yet faithful
+- rollout engine is still one-step
+- lineages are sampled as frontier states, not explicit committed rollout programs
+- behavior descriptors are still heuristic rather than task-grounded
+- operator classes are still coarse
+- true measured compute cost is not yet wired into the sampler
+
+10. What faithful HTA would require next
+
+- true short committed rollouts
+- lineage-plus-budget sampling instead of state-only sampling
+- task-grounded behavior descriptors
+- explicit diversity-constrained optimization with measured compute
+- richer operator / transformation credit
