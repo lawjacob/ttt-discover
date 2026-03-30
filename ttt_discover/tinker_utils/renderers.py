@@ -315,6 +315,35 @@ class Renderer(Protocol):
         return tinker.ModelInput(chunks=model_input_chunks), weights_tensor
 
 
+class GenericChatRenderer(Renderer):
+    """
+    Plain-text renderer for external APIs that do not rely on model-specific chat tokens.
+    """
+
+    def render_message(self, idx: int, message: Message, is_last: bool = False) -> RenderedMessage:
+        assert isinstance(message["content"], str), "GenericChatRenderer only supports string content"
+        role = message["role"].capitalize()
+        prefix_text = f"{role}:\n"
+        content_text = message["content"]
+        if not is_last:
+            content_text += "\n\n"
+        prefix = tinker.types.EncodedTextChunk(
+            tokens=self.tokenizer.encode(prefix_text, add_special_tokens=False)
+        )
+        content = [
+            tinker.types.EncodedTextChunk(
+                tokens=self.tokenizer.encode(content_text, add_special_tokens=False)
+            )
+        ]
+        return RenderedMessage(prefix=prefix, content=content)
+
+    def get_stop_sequences(self) -> list[str]:
+        return []
+
+    def parse_response(self, response: list[int]) -> tuple[Message, bool]:
+        return Message(role="assistant", content=self.tokenizer.decode(response)), True
+
+
 def parse_response_for_stop_token(
     response: list[int], tokenizer: Tokenizer, stop_token: int
 ) -> tuple[Message, bool]:
@@ -565,6 +594,8 @@ class GptOssRenderer(Renderer):
 def get_renderer(
     name: str, tokenizer: Tokenizer
 ) -> Renderer:
+    if name == "generic_chat":
+        return GenericChatRenderer(tokenizer)
     if name == "qwen3":
         return Qwen3Renderer(tokenizer)
     elif name == "qwen3_instruct":

@@ -7,6 +7,11 @@ Evals and other code should use the appropriate interface.
 """
 
 import asyncio
+import json
+import os
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -159,6 +164,95 @@ class LocalHFTokenCompleter(TokenCompleter):
 
         generated = await asyncio.to_thread(self._model.generate, **generation_kwargs)
         tokens = generated[0][len(prompt_tokens):].tolist()
+        return TokensWithLogprobs(tokens=tokens, maybe_logprobs=[0.0] * len(tokens))
+
+
+@dataclass
+class GeminiTokenCompleter(TokenCompleter):
+    model_name: str
+    tokenizer: Tokenizer
+    max_new_tokens: int = 2048
+    temperature: float = 1.0
+    api_base: str = "https://generativelanguage.googleapis.com/v1beta"
+
+    def __post_init__(self) -> None:
+        self._api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not self._api_key:
+            raise ValueError(
+                "Gemini backend requires GEMINI_API_KEY or GOOGLE_API_KEY in the environment"
+            )
+        self._model_path = self.model_name
+        if not self._model_path.startswith("models/"):
+            self._model_path = f"models/{self._model_path}"
+
+    def _decode_prompt(self, model_input: tinker.ModelInput) -> str:
+        return self.tokenizer.decode(_flatten_text_tokens(model_input))
+
+    def _stop_sequences(self, stop: StopCondition) -> list[str]:
+        stop_sequences: list[str] = []
+        for item in stop:
+            if isinstance(item, int):
+                stop_sequences.append(self.tokenizer.decode([item]))
+            else:
+                stop_sequences.append(item)
+        return [seq for seq in stop_sequences if seq]
+
+    def _request_payload(self, prompt_text: str, stop: StopCondition) -> dict:
+        generation_config: dict[str, object] = {
+            "temperature": self.temperature,
+            "maxOutputTokens": self.max_new_tokens,
+        }
+        stop_sequences = self._stop_sequences(stop)
+        if stop_sequences:
+            generation_config["stopSequences"] = stop_sequences
+        return {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt_text}],
+                }
+            ],
+            "generationConfig": generation_config,
+        }
+
+    def _extract_text(self, response_data: dict) -> str:
+        candidates = response_data.get("candidates", [])
+        if not candidates:
+            prompt_feedback = response_data.get("promptFeedback")
+            raise RuntimeError(f"Gemini returned no candidates: {prompt_feedback!r}")
+        parts = candidates[0].get("content", {}).get("parts", [])
+        texts = [part.get("text", "") for part in parts if part.get("text")]
+        if not texts:
+            finish_reason = candidates[0].get("finishReason")
+            raise RuntimeError(f"Gemini returned no text parts (finish_reason={finish_reason!r})")
+        return "".join(texts)
+
+    def _generate_sync(self, prompt_text: str, stop: StopCondition) -> str:
+        payload = json.dumps(self._request_payload(prompt_text, stop)).encode("utf-8")
+        url = (
+            f"{self.api_base}/{self._model_path}:generateContent?"
+            f"{urllib.parse.urlencode({'key': self._api_key})}"
+        )
+        request = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                response_data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Gemini API request failed ({exc.code}): {body}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Gemini API request failed: {exc.reason}") from exc
+        return self._extract_text(response_data)
+
+    async def __call__(self, model_input: tinker.ModelInput, stop: StopCondition) -> TokensWithLogprobs:
+        prompt_text = self._decode_prompt(model_input)
+        response_text = await asyncio.to_thread(self._generate_sync, prompt_text, stop)
+        tokens = self.tokenizer.encode(response_text, add_special_tokens=False)
         return TokensWithLogprobs(tokens=tokens, maybe_logprobs=[0.0] * len(tokens))
 
 

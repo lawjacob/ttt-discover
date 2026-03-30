@@ -15,11 +15,13 @@ logger = logging.getLogger(__name__)
 
 def _infer_renderer_name(model_name: str) -> str:
     lower = model_name.lower()
+    if "gemini" in lower:
+        return "generic_chat"
     if "qwen" in lower:
         return "qwen3_instruct"
     if "gpt-oss" in lower:
         return "gpt_oss_high_reasoning"
-    return "qwen3_instruct"
+    return "generic_chat"
 
 
 @chz.chz
@@ -28,9 +30,10 @@ class DiscoverConfig:
 
     # Model config
     model_name: str = "openai/gpt-oss-120b"
+    tokenizer_model_name: str | None = None
     lora_rank: int = 32
     renderer_name: str | None = "gpt_oss_high_reasoning"
-    backend_type: Literal["tinker_train", "local_inference"] = "tinker_train"
+    backend_type: Literal["tinker_train", "local_inference", "gemini_inference"] = "tinker_train"
     local_model_path: str | None = None
     local_max_new_tokens: int = 2048
     local_device_map: str = "auto"
@@ -103,11 +106,18 @@ async def discover_impl(config: DiscoverConfig):
     logging.getLogger().addHandler(logging.NullHandler())
 
     effective_model_name = config.local_model_path or config.model_name
+    if config.backend_type == "gemini_inference" and not config.tokenizer_model_name:
+        raise ValueError(
+            "Gemini backend requires tokenizer_model_name so the repo can render prompts and parse outputs"
+        )
     renderer_name = config.renderer_name
     inferred_renderer = _infer_renderer_name(effective_model_name)
     if renderer_name is None:
         renderer_name = inferred_renderer
-    elif inferred_renderer != renderer_name and "qwen" in effective_model_name.lower() and renderer_name.startswith("gpt_oss"):
+    elif inferred_renderer != renderer_name and (
+        ("qwen" in effective_model_name.lower() and renderer_name.startswith("gpt_oss"))
+        or ("gemini" in effective_model_name.lower() and renderer_name != "generic_chat")
+    ):
         logger.warning(
             "Renderer '%s' does not match model '%s'; switching to '%s'.",
             renderer_name,
@@ -126,7 +136,7 @@ async def discover_impl(config: DiscoverConfig):
         problem_type=config.problem_type,
         batch_size=config.groups_per_batch,
         group_size=config.group_size,
-        model_name_for_tokenizer=config.local_model_path or config.model_name,
+        model_name_for_tokenizer=config.tokenizer_model_name or config.local_model_path or config.model_name,
         renderer_name=renderer_name,
         num_cpus_per_task=config.num_cpus_per_task,
         eval_timeout=config.eval_timeout,
@@ -147,6 +157,7 @@ async def discover_impl(config: DiscoverConfig):
         learning_rate=config.learning_rate,
         dataset_builder=dataset_builder,
         model_name=config.model_name,
+        tokenizer_model_name=config.tokenizer_model_name,
         lora_rank=config.lora_rank,
         temperature=config.temperature,
         wandb_project=config.wandb_project,

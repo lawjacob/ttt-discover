@@ -16,7 +16,12 @@ import tinker
 import torch
 from tinker.types import LossFnType
 from ttt_discover.tinker_utils.misc_utils import get_last_checkpoint, save_checkpoint_async
-from ttt_discover.tinker_utils.completers import LocalHFTokenCompleter, TwoPhaseTokenCompleter
+from ttt_discover.tinker_utils.completers import (
+    GeminiTokenCompleter,
+    LocalHFTokenCompleter,
+    TokenCompleter,
+    TwoPhaseTokenCompleter,
+)
 from ttt_discover.rl.data_processing import (
     assemble_training_data,
     remove_constant_reward_groups,
@@ -274,6 +279,7 @@ class Config:
     learning_rate: float
     dataset_builder: RLDatasetBuilder  # also determines batch size
     model_name: str
+    tokenizer_model_name: str | None = None
     num_epochs: int = 1
     temperature: float = 1.0  # Changing sampling temperature is not generally recommended; does not currently play well with KL penalty
     lora_rank: int = 32
@@ -304,7 +310,7 @@ class Config:
     
     # Local model path (avoids HuggingFace API rate limits)
     local_model_path: str | None = None
-    backend_type: Literal["tinker_train", "local_inference"] = "tinker_train"
+    backend_type: Literal["tinker_train", "local_inference", "gemini_inference"] = "tinker_train"
     local_max_new_tokens: int = 2048
     local_device_map: str = "auto"
 
@@ -626,10 +632,10 @@ async def main(
     else:
         start_batch = 0
 
-    if cfg.backend_type == "local_inference":
+    if cfg.backend_type in {"local_inference", "gemini_inference"}:
         from ttt_discover.tinker_utils.misc_utils import get_tokenizer
 
-        tokenizer = get_tokenizer(cfg.local_model_path or cfg.model_name)
+        tokenizer = get_tokenizer(cfg.tokenizer_model_name or cfg.local_model_path or cfg.model_name)
         dataset = await cfg.dataset_builder()
         if resume_info and start_batch > 0 and hasattr(dataset, "sampler") and hasattr(dataset.sampler, "reload_from_step"):
             logger.info(f"Reloading sampler state from step {start_batch}")
@@ -639,17 +645,26 @@ async def main(
             raise ValueError("RLDataset must contain at least one batch")
         num_batches_total = num_batches_per_epoch * cfg.num_epochs
         logger.info(
-            "Running local inference-only search for %s step(s) with %s",
+            "Running inference-only search for %s step(s) with %s via backend %s",
             num_batches_total,
             cfg.local_model_path or cfg.model_name,
+            cfg.backend_type,
         )
-        policy = LocalHFTokenCompleter(
-            model_name_or_path=cfg.local_model_path or cfg.model_name,
-            tokenizer=tokenizer,
-            max_new_tokens=cfg.local_max_new_tokens,
-            temperature=cfg.temperature,
-            device_map=cfg.local_device_map,
-        )
+        if cfg.backend_type == "local_inference":
+            policy: TokenCompleter = LocalHFTokenCompleter(
+                model_name_or_path=cfg.local_model_path or cfg.model_name,
+                tokenizer=tokenizer,
+                max_new_tokens=cfg.local_max_new_tokens,
+                temperature=cfg.temperature,
+                device_map=cfg.local_device_map,
+            )
+        else:
+            policy = GeminiTokenCompleter(
+                model_name=cfg.model_name,
+                tokenizer=tokenizer,
+                max_new_tokens=cfg.local_max_new_tokens,
+                temperature=cfg.temperature,
+            )
         await do_local_inference_search(
             start_batch=start_batch,
             end_batch=num_batches_total,
@@ -749,7 +764,7 @@ async def do_local_inference_search(
     cfg: Config,
     dataset: RLDataset,
     ml_logger: ml_log.Logger,
-    policy: LocalHFTokenCompleter,
+    policy: TokenCompleter,
 ):
     num_batches_per_epoch = len(dataset)
     if num_batches_per_epoch == 0:
