@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -8,6 +9,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from ttt_discover import Environment, SandboxRewardEvaluator, State, DiscoverConfig, discover
+from ttt_discover.discovery import discover_impl
 
 
 def verify_c5_solution(h_values: np.ndarray, c5_achieved: float, n_points: int):
@@ -263,6 +265,53 @@ def discover_erdos_min_overlap(
         map_elites_migration_top_k=map_elites_migration_top_k,
     )
     discover(config)
+
+
+async def discover_erdos_min_overlap_async(
+    *,
+    backend_type: str = "local_inference",
+    model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct",
+    tokenizer_model_name: str | None = None,
+    local_model_path: str | None = None,
+    renderer_name: str | None = "qwen3_instruct",
+    sampler_type: str = "puct",
+    num_steps: int = 10,
+    group_size: int = 1,
+    groups_per_batch: int = 1,
+    num_cpus_per_task: int = 1,
+    hta_commit_horizon: int = 1,
+    map_elites_num_islands: int = 4,
+    map_elites_cells_per_dim: int = 4,
+    map_elites_migration_interval: int = 5,
+    map_elites_migration_top_k: int = 1,
+    experiment_name: str | None = None,
+    wandb_project: str | None = None,
+):
+    if experiment_name is None:
+        experiment_name = f"erdos-min-overlap-{sampler_type}-{backend_type}"
+    config = DiscoverConfig(
+        env_type=ErdosMinOverlapEnv,
+        problem_type="",
+        num_cpus_per_task=num_cpus_per_task,
+        eval_timeout=530,
+        experiment_name=experiment_name,
+        wandb_project=wandb_project,
+        backend_type=backend_type,
+        model_name=model_name,
+        tokenizer_model_name=tokenizer_model_name,
+        local_model_path=local_model_path,
+        renderer_name=renderer_name,
+        sampler_type=sampler_type,
+        hta_commit_horizon=hta_commit_horizon,
+        num_epochs=num_steps,
+        group_size=group_size,
+        groups_per_batch=groups_per_batch,
+        map_elites_num_islands=map_elites_num_islands,
+        map_elites_cells_per_dim=map_elites_cells_per_dim,
+        map_elites_migration_interval=map_elites_migration_interval,
+        map_elites_migration_top_k=map_elites_migration_top_k,
+    )
+    await discover_impl(config)
     
 
 if __name__ == "__main__":
