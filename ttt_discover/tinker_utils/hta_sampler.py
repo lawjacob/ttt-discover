@@ -441,6 +441,29 @@ class HTASampler(StateSampler):
             empirical = max(self._gain_prior, stats_obj.total_positive_gain / stats_obj.improve_count)
         return float(max(self._gain_prior, 0.5 * empirical + 0.5 * stats_obj.ewma_gain))
 
+    def _reference_value(self) -> float:
+        initial_values = [
+            float(s.value)
+            for s in self._states
+            if s.value is not None and getattr(s, "timestep", -1) <= -1
+        ]
+        if initial_values:
+            return float(max(initial_values))
+        values = [float(s.value) for s in self._states if s.value is not None]
+        return float(max(values)) if values else 0.0
+
+    def _niche_recent_gain(self, niche_id: str) -> float:
+        stats = self._niches.get(niche_id)
+        if stats is None:
+            return 0.0
+        lineage_gains = [
+            max(0.0, self._lineages[lid].recent_improvement)
+            for lid in stats.live_lineages
+            if lid in self._lineages
+        ]
+        local_recent = max(lineage_gains) if lineage_gains else 0.0
+        return max(0.0, stats.progress, local_recent)
+
     def _compute_cost(self, stats_obj: NicheStats | Lineage) -> float:
         # Approximate compute cost from how many attempts are needed to obtain a valid sample.
         return float((stats_obj.attempts + self._valid_prior[0]) / (stats_obj.valid_count + self._valid_prior[0]))
@@ -460,7 +483,14 @@ class HTASampler(StateSampler):
         p_valid = self._valid_probability(stats)
         p_improve = self._improve_probability(stats)
         m_gain = self._conditional_gain(stats)
-        return (p_valid * p_improve * m_gain) / self._compute_cost(stats)
+        recent_gain = self._niche_recent_gain(niche_id)
+        incumbent_gain = max(0.0, float(stats.best_reward) - self._reference_value()) if math.isfinite(float(stats.best_reward)) else 0.0
+        promise = (
+            0.55 * recent_gain
+            + 0.30 * (p_improve * m_gain)
+            + 0.15 * incumbent_gain
+        )
+        return p_valid * promise
 
     def _update_alpha(self, niche_dist: dict[str, float]):
         # Adaptive diversity constraint: increase inter-niche allocation when
@@ -521,28 +551,17 @@ class HTASampler(StateSampler):
         for nid, stats in self._niches.items():
             if self._best_frontier_in_niche(nid) is None:
                 continue
-            p_div = max(1e-3, 1.0 - niche_dist.get(nid, 0.0))
+            p_div = 1.0 / (1.0 + max(0.0, niche_dist.get(nid, 0.0) * len(self._niches)))
             gain = self._niche_expected_improvement_per_compute(nid)
             rescue = self._rescue_bonus(stats)
-            lambda_t = max(0.25, self.alpha)
-            scores[nid] = math.log(p_div) + (gain + rescue) / lambda_t
-        score_values = np.array(list(scores.values()), dtype=float)
-        if score_values.size == 0:
+            scores[nid] = max(1e-4, p_div * (0.05 + gain + 0.5 * rescue + 0.1 * stats.uncertainty))
+        if not scores:
             return {}
-        finite_mask = np.isfinite(score_values)
-        if not finite_mask.any():
-            uniform = 1.0 / len(scores)
-            return {nid: uniform for nid in scores}
-        finite_scores = score_values[finite_mask]
-        score_values = np.where(finite_mask, score_values, np.min(finite_scores) - 1.0)
-        score_values = score_values - np.max(score_values)
-        probs = np.exp(np.clip(score_values, -50.0, 50.0))
-        total = float(np.sum(probs))
+        total = float(sum(scores.values()))
         if not math.isfinite(total) or total <= 0.0:
             uniform = 1.0 / len(scores)
             return {nid: uniform for nid in scores}
-        probs = probs / total
-        return {nid: float(p) for nid, p in zip(scores.keys(), probs)}
+        return {nid: float(score / total) for nid, score in scores.items()}
 
     def _pick_inter_niche(self, num_states: int, niche_dist: dict[str, float]) -> list[State]:
         # Across niches: choose where expected improvement per unit depth is high,
@@ -665,10 +684,14 @@ class HTASampler(StateSampler):
         p_valid = self._valid_probability(lineage)
         p_improve = self._improve_probability(lineage)
         m_gain = self._conditional_gain(lineage)
-        promise = p_valid * p_improve * m_gain
-        promise += 0.1 * max(0.0, observed_gain)
-        promise += 0.1 * max(0.0, lineage.credit_score)
-        promise += 0.05 * max(0.0, stats.progress)
+        promise = (
+            0.60 * max(0.0, lineage.recent_improvement)
+            + 0.25 * (p_improve * m_gain)
+            + 0.15 * observed_gain
+        )
+        promise = p_valid * promise
+        promise += 0.08 * max(0.0, lineage.credit_score)
+        promise += 0.04 * max(0.0, stats.progress)
         return promise / self._depth_cost(lineage)
 
     def _operator_signature(self, parent: State, child: State) -> str:
