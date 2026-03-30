@@ -1,4 +1,11 @@
+import sys
+from pathlib import Path
+
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from ttt_discover import Environment, SandboxRewardEvaluator, State, DiscoverConfig, discover
 
@@ -129,6 +136,23 @@ class ErdosMinOverlapEnv(Environment):
     def is_maximize(self) -> bool:
         return False # Minimize upper bound
 
+    @staticmethod
+    def behavior_descriptor(state: State) -> list[float] | None:
+        construction = getattr(state, "construction", None)
+        if not isinstance(construction, list) or not construction:
+            return None
+        arr = np.array(construction, dtype=float)
+        dx = 2.0 / len(arr)
+        correlation = np.correlate(arr, 1.0 - arr, mode="full") * dx
+        c5_bound = float(np.max(correlation))
+        descriptor = [
+            float(np.clip(np.mean(arr), 0.0, 1.0)),
+            float(np.clip(np.std(arr), 0.0, 1.0)),
+            float(np.clip(c5_bound / 1.0, 0.0, 1.0)),
+            float(np.clip(len(arr) / 1000.0, 0.0, 1.0)),
+        ]
+        return descriptor
+
     def get_question(self) -> str:
         state = self.initial_state
         state_ctx = state.to_prompt(0.3808, metric_name="C₅ bound", maximize=False)
@@ -194,16 +218,50 @@ Smaller sequences with less than 1k samples are preferred - they are faster to o
 '''
 
 
-def discover_erdos_min_overlap():
+def discover_erdos_min_overlap(
+    *,
+    backend_type: str = "local_inference",
+    model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct",
+    tokenizer_model_name: str | None = None,
+    local_model_path: str | None = None,
+    renderer_name: str | None = "qwen3_instruct",
+    sampler_type: str = "puct",
+    num_steps: int = 10,
+    group_size: int = 1,
+    groups_per_batch: int = 1,
+    num_cpus_per_task: int = 1,
+    hta_commit_horizon: int = 1,
+    map_elites_num_islands: int = 4,
+    map_elites_cells_per_dim: int = 4,
+    map_elites_migration_interval: int = 5,
+    map_elites_migration_top_k: int = 1,
+    experiment_name: str | None = None,
+    wandb_project: str | None = None,
+):
+    if experiment_name is None:
+        experiment_name = f"erdos-min-overlap-{sampler_type}-{backend_type}"
     config = DiscoverConfig(
         env_type=ErdosMinOverlapEnv,
         problem_type="",
-        num_cpus_per_task=1,
+        num_cpus_per_task=num_cpus_per_task,
         eval_timeout=530,
-        experiment_name=f"test-erdos-min-overlap-run",
-        wandb_project="erdos-min-overlap",
+        experiment_name=experiment_name,
+        wandb_project=wandb_project,
+        backend_type=backend_type,
+        model_name=model_name,
+        tokenizer_model_name=tokenizer_model_name,
+        local_model_path=local_model_path,
+        renderer_name=renderer_name,
+        sampler_type=sampler_type,
+        hta_commit_horizon=hta_commit_horizon,
+        num_epochs=num_steps,
+        group_size=group_size,
+        groups_per_batch=groups_per_batch,
+        map_elites_num_islands=map_elites_num_islands,
+        map_elites_cells_per_dim=map_elites_cells_per_dim,
+        map_elites_migration_interval=map_elites_migration_interval,
+        map_elites_migration_top_k=map_elites_migration_top_k,
     )
-
     discover(config)
     
 
