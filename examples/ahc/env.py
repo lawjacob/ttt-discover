@@ -153,6 +153,55 @@ def discover_ahc058():
     discover(config)
 
 
+def discover_ahc(
+    problem_type: str,
+    *,
+    backend_type: str = "local_inference",
+    model_name: str = "Qwen/Qwen2.5-Coder-3B-Instruct",
+    tokenizer_model_name: str | None = None,
+    local_model_path: str | None = None,
+    renderer_name: str | None = None,
+    sampler_type: str = "puct",
+    hta_commit_horizon: int = 1,
+    num_steps: int = 10,
+    group_size: int = 1,
+    groups_per_batch: int = 1,
+    num_cpus_per_task: int = CPUS_PER_TASK,
+    local_max_new_tokens: int = 2048,
+    local_device_map: str = "auto",
+):
+    if problem_type not in {"ahc039", "ahc058"}:
+        raise ValueError("problem_type must be 'ahc039' or 'ahc058'")
+
+    if renderer_name is None:
+        renderer_name = "qwen3_instruct" if "qwen" in model_name.lower() else None
+
+    default_phase1 = 22000 if problem_type == "ahc039" else 25000
+
+    config = DiscoverConfig(
+        env_type=AhcEnv,
+        problem_type=problem_type,
+        num_cpus_per_task=num_cpus_per_task,
+        eval_timeout=530,
+        experiment_name=f"{problem_type}-{sampler_type}-{backend_type}",
+        wandb_project=None,
+        backend_type=backend_type,
+        model_name=model_name,
+        tokenizer_model_name=tokenizer_model_name,
+        local_model_path=local_model_path,
+        renderer_name=renderer_name,
+        sampler_type=sampler_type,
+        hta_commit_horizon=hta_commit_horizon,
+        num_epochs=num_steps,
+        group_size=group_size,
+        groups_per_batch=groups_per_batch,
+        phase1_max_tokens=default_phase1,
+        local_max_new_tokens=local_max_new_tokens,
+        local_device_map=local_device_map,
+    )
+    discover(config)
+
+
 if __name__ == "__main__":
     discover_ahc039()
     # discover_ahc058()
