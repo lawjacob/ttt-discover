@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import ClassVar, TypeAlias
 
 import tinker
 from ttt_discover.tinker_utils.misc_utils import Tokenizer
@@ -172,9 +172,9 @@ class LocalHFTokenCompleter(TokenCompleter):
 
 @dataclass
 class GeminiTokenCompleter(TokenCompleter):
-    _rate_limit_lock = threading.Lock()
-    _minute_request_times: dict[str, collections.deque[float]] = {}
-    _day_request_times: dict[str, collections.deque[float]] = {}
+    _rate_limit_lock: ClassVar[threading.Lock] = threading.Lock()
+    _minute_request_times: ClassVar[dict[str, collections.deque[float]]] = {}
+    _day_request_times: ClassVar[dict[str, collections.deque[float]]] = {}
 
     model_name: str
     tokenizer: Tokenizer
