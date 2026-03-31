@@ -209,8 +209,68 @@ Smaller sequences with less than 1k samples are preferred - they are faster to o
 - Use scipy, numpy, cvxpy[CBC,CVXOPT,GLOP,GLPK,GUROBI,MOSEK,PDLP,SCIP,XPRESS,ECOS], math
 - Make all helper functions top level, no closures or lambdas
 - No filesystem or network IO
-- `evaluate_erdos_solution()` and `initial_h_values` (an initial construction, if available) are pre-imported
+- `initial_h_values` is a global numpy array already defined for you when an initial construction is available
+- `evaluate_erdos_solution(h_values, c5_bound, n_points)` is a verifier that checks a completed candidate; it is not an optimizer and it requires exactly 3 arguments
+- Do not import `initial_h_values` or `evaluate_erdos_solution` from any module; they already exist in the execution environment as globals
+- Do not shadow those names by redefining them
 - Your function must complete within budget_s seconds and return the best solution found
+
+## Required Output Shape
+- Return exactly one tuple: `(h_values, c5_bound, n_points)`
+- `h_values` must be a 1D numpy array or a list convertible to a 1D numpy array
+- `n_points` must equal `len(h_values)`
+- `c5_bound` must equal `max(np.correlate(h_values, 1 - h_values, mode="full") * (2.0 / n_points))`
+- Ensure `sum(h_values) == n_points / 2` up to numerical precision before reporting `c5_bound`
+
+## Forbidden Patterns
+- No example usage
+- No top-level code that calls `run()`
+- No `if __name__ == "__main__":`
+- No plotting
+- No printing required
+- No fake imports such as `from evaluate_erdos_solution import ...` or `from initial_h_values import ...`
+- Do not reference variables that are not defined inside your code or provided globals
+
+## Minimal Valid Template
+Use this exact interface shape and then improve the optimization logic inside it:
+
+```python
+import numpy as np
+from scipy.optimize import minimize
+
+def compute_c5(h_values):
+    h_values = np.asarray(h_values, dtype=float)
+    n_points = len(h_values)
+    dx = 2.0 / n_points
+    return float(np.max(np.correlate(h_values, 1.0 - h_values, mode="full") * dx))
+
+def project_feasible(h_values):
+    h_values = np.asarray(h_values, dtype=float)
+    h_values = np.clip(h_values, 0.0, 1.0)
+    target_sum = len(h_values) / 2.0
+    current_sum = float(np.sum(h_values))
+    if current_sum <= 0:
+        return np.full(len(h_values), 0.5, dtype=float)
+    h_values = h_values * (target_sum / current_sum)
+    return np.clip(h_values, 0.0, 1.0)
+
+def objective(h_values):
+    h_values = project_feasible(h_values)
+    return compute_c5(h_values)
+
+def run(seed=42, budget_s=1000, **kwargs):
+    np.random.seed(seed)
+    h0 = np.asarray(initial_h_values, dtype=float).copy()
+    h0 = project_feasible(h0)
+    result = minimize(objective, h0, method="L-BFGS-B", bounds=[(0.0, 1.0)] * len(h0))
+    h_best = project_feasible(result.x if result.success else h0)
+    n_points = len(h_best)
+    c5_bound = compute_c5(h_best)
+    evaluate_erdos_solution(h_best, c5_bound, n_points)
+    return h_best, c5_bound, n_points
+```
+
+If you change the template, keep the same contract and global-variable assumptions.
 
 **Lower is better**. Current record: C₅ ≤ 0.38092. Our goal is to find a construction that shows C₅ ≤ 0.38080.
 
